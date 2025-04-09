@@ -38,6 +38,17 @@ The script writes `JSON` data to a file, called `solar_data.json`, in the `Sunbl
 
 The script also logs raw data to an `SQLite` database called `sunblock.db` in the `SunblockData` folder. This database is used by dat
 
+### SQLite Database creation: 
+Database name: `sunblockone.db`
+
+Open database with `sqlite3 sunblockone.db` (if it exists, it will be opened. If it doesnt, it will be created). 
+
+**If you are creating a new database, run the following commmand inside SQLite:**
+
+```
+CREATE TABLE solardata(timestamp text, PVVoltage real, PVCurrent real, PVPower real, BattVoltage real, BattChargeCurrent real, BattChargePower real, LoadPower real, BattPercentage int, BattOverallCurrent real, CPUPowerDraw real);
+```
+
 ## Installation:
 
 1. Clone the repo
@@ -76,3 +87,5 @@ WantedBy=default.target
 ```
 
 Make sure the SunblockData directory is writable by the main system user (likely named 'pc')
+
+
