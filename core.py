@@ -19,7 +19,7 @@ ACTIVE_DATA = DATA_DIRECTORY + "solar_data.json"
 POWER_LOGS_FILE = "/home/pc/SunblockData/SunblockPowerlogs.txt"
 
 POWER_MAN = False
-DATA_MAN = True
+DATA_MAN = False
 
 DB_NAME = DATA_DIRECTORY + "sunblockone.db"
 DB_TABLE_NAME = "solardata"
@@ -374,8 +374,8 @@ def Main():
 
                 ParseData(ReceivedString)
 
+                WriteJSON()
                 if DATA_MAN:
-                    WriteJSON()
                     WriteDB()
 
                 if POWER_MAN:
