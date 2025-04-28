@@ -19,7 +19,7 @@ ACTIVE_DATA = DATA_DIRECTORY + "solar_data.json"
 POWER_LOGS_FILE = "/home/pc/SunblockData/SunblockPowerlogs.txt"
 
 POWER_MAN = False
-DATA_MAN = False
+DATA_MAN = True
 
 DB_NAME = DATA_DIRECTORY + "sunblockone.db"
 DB_TABLE_NAME = "solardata"
@@ -105,6 +105,7 @@ JSON_DATA = {
     "BattPercentage": 0,
     "BattOverallCurrent": 0,
     "CPUPowerDraw": 0,
+    "PowerProfile": "",
 }
 
 
@@ -167,7 +168,7 @@ def CheckDB():
         if not os.path.isfile(DB_NAME):
             DB_CONNECTION = sqlite3.connect(DB_NAME)
             DB_CURSOR = DB_CONNECTION.cursor()
-            DB_CURSOR.execute("CREATE TABLE solardata(Timestamp text, PVVoltage real, PVCurrent real, PVPower real, BattVoltage real, BattChargeCurrent real, BattChargePower real, LoadPower real, BattPercentage int, BattOverallCurrent real, CPUPowerDraw real)")
+            DB_CURSOR.execute("CREATE TABLE solardata(Timestamp text, PVVoltage real, PVCurrent real, PVPower real, BattVoltage real, BattChargeCurrent real, BattChargePower real, LoadPower real, BattPercentage int, BattOverallCurrent real, CPUPowerDraw real, PowerProfile text)")
         else:
             DB_CONNECTION = sqlite3.connect(DB_NAME)
             DB_CURSOR = DB_CONNECTION.cursor()
@@ -204,6 +205,8 @@ def ParseData(data_string):
     powerdraw = subprocess.run(POWER_DRAW_SCRIPT_ADDR, capture_output=True)
     powerdraw = powerdraw.stdout.decode().replace("W", "").strip()
     JSON_DATA["CPUPowerDraw"] = powerdraw
+    
+    JSON_DATA["PowerProfile"] = os.popen("sudo powerprofilesctl get").read().strip()
 
 
 # POWER MANAGEMENT
