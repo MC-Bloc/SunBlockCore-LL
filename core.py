@@ -5,7 +5,6 @@ import re
 import json
 import subprocess
 from datetime import datetime
-import csv
 import os
 from enum import Enum
 import sqlite3
@@ -26,7 +25,6 @@ DB_CURSOR = None
 
 # To be initialized in OpenCSVFile
 LOG_FILE_NAME = None
-
 JSON_DATA = {
     "Timestamp": 0,
     "PVVoltage": 0,
@@ -42,55 +40,12 @@ JSON_DATA = {
     "PowerProfile": "",
 }
 
-
-def is_float(string):
-    try:
-        float(string)
-        return True
-    except ValueError:
-        return False
-
-
-def PrintJSON():
-    subprocess.call("clear")
-    for i in JSON_DATA:
-        print(i, ":", JSON_DATA[i])
-    print("\n\n")
-
-
 def WriteJSON():
     # active data is the data being used by other services.
     # this is in JSON format and kept in the same directory as the minecraft server.
     json_file = open(ACTIVE_DATA, "w")
     json.dump(JSON_DATA, json_file, indent=4)
     json_file.close()
-
-
-'''
-Deprecated: CSVs are deprecated. Use Database instead
-'''
-
-def OpenCSVFile():
-    global LOG_FILE_NAME
-
-    LOG_FILE_NAME = DATA_DIRECTORY + "solar_data_log---" + \
-        str(datetime.now().strftime("%Y-%m-%d-%H:%M:%S")) + ".csv"
-    with open(LOG_FILE_NAME, 'w', newline='') as log_file:
-        csv_header = JSON_DATA.keys()
-        csv_writer = csv.writer(log_file)
-        csv_writer.writerow(csv_header)
-
-'''
-Deprecated: CSVs are deprecated. Use Database instead
-'''
-def WriteCSV():
-
-    if (not os.path.isfile(LOG_FILE_NAME)):
-        OpenCSVFile()
-
-    with open(LOG_FILE_NAME, 'a', newline='') as log_file:
-        csv_writer = csv.writer(log_file)
-        csv_writer.writerow(JSON_DATA.values())
 
 
 def CheckDB():
@@ -107,7 +62,6 @@ def CheckDB():
             DB_CONNECTION = sqlite3.connect(DB_NAME)
             DB_CURSOR = DB_CONNECTION.cursor()
         return True
-    return False
 
 
 def WriteDB():
@@ -201,12 +155,4 @@ def Main():
     Powerlog("Exiting While loop. Serial Object Closed.")
 
 
-def Testing():
-    print("IN TESTING MODE:")
-    Powerlog("Testing mode: ")
-
-    return None
-
-
 Main()
-# Testing()
