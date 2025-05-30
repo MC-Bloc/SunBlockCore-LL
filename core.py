@@ -12,7 +12,7 @@ CONTROLLER = EpeverChargeController("/dev/ttyACM0", 1)
 DATA_DIRECTORY = "/home/pc/SunblockData/"
 POWER_DRAW_SCRIPT_ADDR = "/home/pc/power_scripts/powerdraw.sh"
 ACTIVE_DATA = DATA_DIRECTORY + "solar_data.json"
-POWER_LOGS_FILE = "/home/pc/SunblockData/SunblockPowerlogs.txt"
+POWER_LOGS_FILE = "/home/pc/SunblockData/SunBlockCoreLogs.txt"
 
 DATA_MAN = True
 DB_NAME = DATA_DIRECTORY + "SunBlockCore-LL.db"
