@@ -1,4 +1,3 @@
-from ampapi.modules.ADS import ADS
 from dotenv import load_dotenv
 import json
 from datetime import datetime
