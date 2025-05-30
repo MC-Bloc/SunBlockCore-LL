@@ -1,4 +1,3 @@
-from ampapi.modules.ADS import ADS
 from dotenv import load_dotenv
 import serial
 import time
@@ -59,36 +58,6 @@ FAILSAFE_LOWERBOUND = 12.00
 TO_POWER_SAVER = 12.5  # if loadpower is at or below this, go to power saver
 TO_PERFORMANCE = 15.0  # if loadpower is above this, go to performance mode
 POWER_SAVER_ON = True  # Default - must stay on
-
-AMP_INSTANCE_NAME = "Sunblock01"
-# AMP CubeCoders Instances
-AMP_CORE_INSTANCE = None
-SUNBLOCK_AMP_INSTANCE = None
-SUNBLOCK_AMP_MC_INSTANCE = None
-
-'''
-AMP Instance State values and meanings: 
-
-Undefined = -1
-Stopped = 0
-PreStart = 5
-Configuring = 7 # The server is performing some first-time-start configuration.
-Starting = 10
-Ready = 20
-Restarting = 30 # Server is in the middle of stopping, but once shutdown has finished it will automatically restart.
-Stopping = 40
-PreparingForSleep = 45
-Sleeping = 50 # The application should be able to be resumed quickly if using this state. Otherwise use Stopped.
-Waiting = 60 # The application is waiting for some external service/application to respond/become available.
-Installing = 70
-Updating = 75
-AwaitingUserInput = 80 # Used during installation, means that some user input is required to complete setup (authentication etc).
-Failed = 100
-Suspended = 200
-Maintainence = 250
-Indeterminate = 999 # The state is unknown, or doesn't apply (for modules that don't start an external process)
-'''
-
 
 # To be initialized in OpenCSVFile
 LOG_FILE_NAME = None
@@ -216,21 +185,6 @@ def Powerlog(log):
             "%Y-%m-%d %H:%M:%S") + ": " + log + "\n")
 
 
-def MCServerOn():
-    if (AMP_CORE_INSTANCE and SUNBLOCK_AMP_MC_INSTANCE and SUNBLOCK_AMP_INSTANCE):
-        # Get the current CPU usage
-        currentStatus = SUNBLOCK_AMP_MC_INSTANCE.Core.GetStatus()
-        if currentStatus.State in [10, 20, 30]:
-            return True
-        elif currentStatus.State in [0, 40, 50, 60, 100]:
-            return False
-    else:
-        Powerlog("function-> MCServerOn \nError: AMP SERVER ACCESS NOT FOUND \n\n")
-        raise Exception
-
-    return False
-
-
 def CheckPowerProfile():
     return os.popen("sudo powerprofilesctl get").read().strip()
 
@@ -249,24 +203,6 @@ def SwitchProfileSaver():
     Powerlog("Power Saver On. Load Power: " + JSON_DATA["LoadPower"])
 
 
-# To Hot
-def StartMCServer():
-    global CURRENT_STATE
-    if (not MCServerOn()):
-        AMP_CORE_INSTANCE.ADSModule.StartInstance(AMP_INSTANCE_NAME)
-        CURRENT_STATE = SYSTEM_STATES.HOT
-        Powerlog("Minecraft Server Turned On. Battery Voltage: " +
-                 JSON_DATA["BattVoltage"])
-
-
-# To WARM
-def StopMCServer():
-    global CURRENT_STATE
-    if (MCServerOn()):
-        AMP_CORE_INSTANCE.ADSModule.StopInstance(AMP_INSTANCE_NAME)
-        CURRENT_STATE = SYSTEM_STATES.WARM
-        Powerlog("Minecraft Server Turned Off. Battery Voltage: " +
-                 JSON_DATA["BattVoltage"])
 
 
 # To COOL
@@ -328,30 +264,6 @@ def CheckFailsafes():
         SUNBLOCK_WARM_COOLDOWN = FAILSAFE_LOWERBOUND
         Powerlog(
             "Warning: System WARM cooldown is set too high. Change it to avoid system failure")
-
-
-def GetAMPInstance():
-    global AMP_CORE_INSTANCE
-    global SUNBLOCK_AMP_INSTANCE
-    global SUNBLOCK_AMP_MC_INSTANCE
-
-    try:
-        AMP_CORE_INSTANCE = ADS(os.environ.get("amp_endpoint"),
-                                os.environ.get("amp_username"),
-                                os.environ.get("amp_password"))
-        AMP_CORE_INSTANCE.Login()
-
-        instances = AMP_CORE_INSTANCE.ADSModule.GetInstances()[
-            0].AvailableInstances
-        for i in instances:
-            if i.InstanceName == AMP_INSTANCE_NAME:
-                SUNBLOCK_AMP_INSTANCE = i
-
-        SUNBLOCK_AMP_MC_INSTANCE = AMP_CORE_INSTANCE.InstanceLogin(
-            SUNBLOCK_AMP_INSTANCE.InstanceID, "Minecraft")
-
-    except Exception:
-        Powerlog("Error connecting to AMP instance.")
 
 
 def Main():
