@@ -11,7 +11,7 @@ DATA_MAN = None
 
 
 POWER_DRAW_SCRIPT_ADDR = "/home/pc/power_scripts/powerdraw.sh"
-ACTIVE_DATA = DATA_DIRECTORY + "solar_data.json"
+ACTIVE_DATA = None
 
 
 JSON_DATA = {
@@ -63,12 +63,14 @@ def ParseData():
     JSON_DATA["PowerProfile"] = CheckPowerProfile()
 
 def Main():
-    global CONTROLLER, DATA_DIRECTORY
+    global CONTROLLER, DATA_DIRECTORY, ACTIVE_DATA
 
     load_dotenv()
     
     CONTROLLER = EpeverChargeController(os.getenv('CONTROLLER_ADDRESS'), 1)
-    DATA_DIRECTORY = os.getenv('DATA_DIRECTORY')    
+    DATA_DIRECTORY = os.getenv('DATA_DIRECTORY')  
+    ACTIVE_DATA = DATA_DIRECTORY + "solar_data.json"
+      
 
     while (CONTROLLER != None):
         try:
