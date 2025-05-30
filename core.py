@@ -15,8 +15,7 @@ ACTIVE_DATA = DATA_DIRECTORY + "solar_data.json"
 POWER_LOGS_FILE = "/home/pc/SunblockData/SunblockPowerlogs.txt"
 
 DATA_MAN = True
-
-DB_NAME = DATA_DIRECTORY + "sunblockone.db"
+DB_NAME = DATA_DIRECTORY + "SunBlockCore-LL.db"
 DB_TABLE_NAME = "solardata"
 DB_CONNECTION = None
 DB_CURSOR = None
