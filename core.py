@@ -121,6 +121,9 @@ def ParseData(data_string):
     global JSON_DATA
 
     data_array = data_string.strip().split(" ")
+def CheckPowerProfile():
+    return os.popen("sudo powerprofilesctl get").read().strip()
+
 
     JSON_DATA["Timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -148,10 +151,6 @@ def Powerlog(log):
     with open(POWER_LOGS_FILE, 'a') as log_file:
         log_file.write(datetime.now().strftime(
             "%Y-%m-%d %H:%M:%S") + ": " + log + "\n")
-
-
-def CheckPowerProfile():
-    return os.popen("sudo powerprofilesctl get").read().strip()
 
 
 def Main():
