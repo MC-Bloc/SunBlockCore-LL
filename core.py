@@ -17,47 +17,12 @@ POWER_DRAW_SCRIPT_ADDR = "/home/pc/power_scripts/powerdraw.sh"
 ACTIVE_DATA = DATA_DIRECTORY + "solar_data.json"
 POWER_LOGS_FILE = "/home/pc/SunblockData/SunblockPowerlogs.txt"
 
-POWER_MAN = False
 DATA_MAN = True
 
 DB_NAME = DATA_DIRECTORY + "sunblockone.db"
 DB_TABLE_NAME = "solardata"
 DB_CONNECTION = None
 DB_CURSOR = None
-'''
-SYSTEM STATES:
-
-HOT: System is on and MC Server is on.
-WARM: System is on and MC Server is off. This is the default assumed state 
-COOL: System is off. Minimal battery remaining
-COLD: Sunblock as a whole is now off - battery is dead.
-
-COOL and COLD happen outside the system so not included as part of this script
-
-Values sequence: 
-WARM_HEATUP > HOT_COOLDOWN > WARM_COOLDOWN  >= FAILSAFE
-
-'''
-
-
-SYSTEM_STATES = Enum("SYSTEM_STATE", ["HOT", "WARM"])
-CURRENT_STATE = SYSTEM_STATES.WARM  # Default system state
-
-
-# VOLTAGE THRESHOLDS - in volts
-SUNBLOCK_WARM_HEATUP = 13.00  # From WARM to HOT
-SUNBLOCK_HOT_COOLDOWN = 12.85  # From HOT to WARM
-SUNBLOCK_WARM_COOLDOWN = 12.18  # From WARM to COOL
-
-# 11.90 is the hard limit to protect the battery in the Solar controller.
-# WARM_COOLDOWN must not be lower than this value.
-FAILSAFE_LOWERBOUND = 12.00
-
-
-# POWER THRESHOLD - in watts
-TO_POWER_SAVER = 12.5  # if loadpower is at or below this, go to power saver
-TO_PERFORMANCE = 15.0  # if loadpower is above this, go to performance mode
-POWER_SAVER_ON = True  # Default - must stay on
 
 # To be initialized in OpenCSVFile
 LOG_FILE_NAME = None
@@ -187,83 +152,6 @@ def Powerlog(log):
 
 def CheckPowerProfile():
     return os.popen("sudo powerprofilesctl get").read().strip()
-
-
-def SwitchProfilePerformance():
-    global POWER_SAVER_ON
-    os.system("sudo powerprofilesctl set performance")
-    POWER_SAVER_ON = False
-    Powerlog("Power Saver Off. Load Power: " + JSON_DATA["LoadPower"])
-
-
-def SwitchProfileSaver():
-    global POWER_SAVER_ON
-    os.system("sudo powerprofilesctl set power-saver")
-    POWER_SAVER_ON = True
-    Powerlog("Power Saver On. Load Power: " + JSON_DATA["LoadPower"])
-
-
-
-
-# To COOL
-def SuspendSystem():
-    Powerlog("Shutting Down. Battery Voltage: " + JSON_DATA["BattVoltage"])
-    os.system("sudo systemctl suspend")
-
-
-def ProfileAndStateValidation():
-    global POWER_SAVER_ON
-    POWER_SAVER_ON = CheckPowerProfile() == "power-saver"
-
-    global CURRENT_STATE
-    if MCServerOn() and CURRENT_STATE == SYSTEM_STATES.WARM:
-        CURRENT_STATE = SYSTEM_STATES.HOT
-    elif not MCServerOn() and CURRENT_STATE == SYSTEM_STATES.HOT:
-        CURRENT_STATE = SYSTEM_STATES.WARM
-
-
-def PowerStateManagement():
-    battery_voltage = JSON_DATA["BattVoltage"]
-
-    # Switch Power States
-    if is_float(battery_voltage):
-        battery_voltage = float(battery_voltage)
-
-        if CURRENT_STATE == SYSTEM_STATES.WARM and battery_voltage > SUNBLOCK_WARM_HEATUP:
-            # If system is WARM and can heat up, Turn it up to HOT
-            StartMCServer()
-        elif CURRENT_STATE == SYSTEM_STATES.HOT and battery_voltage < SUNBLOCK_HOT_COOLDOWN:
-            # if system is HOT but can no longer stay HOT, turn it down to WARM
-            StopMCServer()
-        elif CURRENT_STATE == SYSTEM_STATES.WARM and battery_voltage < SUNBLOCK_WARM_COOLDOWN:
-            SwitchProfileSaver()
-            # If system is WARM but cant stay WARM, turn it down to COOL
-            SuspendSystem()
-
-
-def PowerProfileManagement():
-    load_power = JSON_DATA["LoadPower"]
-    # Optimize Power states
-    if CURRENT_STATE == SYSTEM_STATES.HOT and is_float(load_power):
-        load_power = float(load_power)
-        # consider adding cpu power draw?
-        if load_power > TO_PERFORMANCE and POWER_SAVER_ON:
-            SwitchProfilePerformance()
-        elif not POWER_SAVER_ON and load_power <= TO_POWER_SAVER:
-            SwitchProfileSaver()
-
-    if CURRENT_STATE == SYSTEM_STATES.WARM and not POWER_SAVER_ON:
-        SwitchProfileSaver()
-
-
-def CheckFailsafes():
-    global SUNBLOCK_WARM_COOLDOWN
-    if SUNBLOCK_WARM_COOLDOWN > SUNBLOCK_HOT_COOLDOWN:
-        # If the Warm-cooldown is high, it may send the system into bootloops.
-        # This is to avoid such a thing.
-        SUNBLOCK_WARM_COOLDOWN = FAILSAFE_LOWERBOUND
-        Powerlog(
-            "Warning: System WARM cooldown is set too high. Change it to avoid system failure")
 
 
 def Main():
