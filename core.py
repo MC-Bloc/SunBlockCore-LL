@@ -29,7 +29,7 @@ JSON_DATA = {
     "PVCurrent": 0,
     "PVPower": 0,
     "BattVoltage": 0,
-    "BattChargeCurrent": 0,
+    "BattTemperature": 0,
     "BattChargePower": 0,
     "LoadPower": 0,
     "BattPercentage": 0,
@@ -55,7 +55,7 @@ def CheckDB():
         if not os.path.isfile(DB_NAME):
             DB_CONNECTION = sqlite3.connect(DB_NAME)
             DB_CURSOR = DB_CONNECTION.cursor()
-            DB_CURSOR.execute("CREATE TABLE solardata(Timestamp text, PVVoltage real, PVCurrent real, PVPower real, BattVoltage real, BattChargeCurrent real, BattChargePower real, LoadPower real, BattPercentage int, BattOverallCurrent real, CPUPowerDraw real, PowerProfile text)")
+            DB_CURSOR.execute("CREATE TABLE solardata(Timestamp text, PVVoltage real, PVCurrent real, PVPower real, BattVoltage real, BattTemperature real, BattChargePower real, LoadPower real, BattPercentage int, BattOverallCurrent real, CPUPowerDraw real, PowerProfile text)")
         else:
             DB_CONNECTION = sqlite3.connect(DB_NAME)
             DB_CURSOR = DB_CONNECTION.cursor()
