@@ -1,9 +1,30 @@
-from dotenv import load_dotenv
+'''
+SunBlockCore-LogicalLayer 
+
+Written by M. Shahrom Ali (github.com/estineali) 
+for The SunBlock Project 
+under the TAG MC-Bloc, Milieux Institute, Concordia University, Montreal, Canada. 
+
+Check it out at https://github.com/MC-Bloc/SunBlock 
+
+Todo: 
+1. The paths at the top are relative to our system. 
+   Please do update the directory addresses according to your own server. 
+2. The solar controller address is /dev/ttyACM0 for our computer. 
+   To find out what yours is, connect the RS45 cable to the PC 
+   and check the latest connected device's address with `sudo dmesg` in the terminal. 
+3. All data is written to a folder called ~/SunblockData. 
+   In our case the absolute path is /home/pc/SunblockData but in your case this should be 
+   /home/{YOUR_USER_NAME}/Sunblockdata. 
+   And this is the case for anywhere you see 'pc' in a file path. 
+4. For ease, the server's user account was authorized passwordless sudo access and hence the sudo commands here. 
+   You should google how to turn this on. 
+'''
+
 import json
 import subprocess
 from datetime import datetime
 import os
-from enum import Enum
 import sqlite3
 from epevermodbus.driver import EpeverChargeController
 
@@ -104,9 +125,7 @@ def SunBlockLog(log):
 
 def Main():
     SunBlockLog("Waking Up...")
-
-    load_dotenv()
-
+    
     if DATA_MAN:
         SunBlockLog("Data Management is " + str(DATA_MAN))
         CheckDB()
