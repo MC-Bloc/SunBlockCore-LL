@@ -81,9 +81,13 @@ SOLAR_DATA = {
 
 # --- Logging ---
 
-def sunblock_log(message):
+async def sunblock_log(message):
+    line = datetime.now().strftime("%Y-%m-%d %H:%M:%S") + ": " + message + "\n"
+    await asyncio.to_thread(_write_log, line)
+
+def _write_log(line):
     with open(POWER_LOGS_FILE, 'a') as f:
-        f.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S") + ": " + message + "\n")
+        f.write(line)
 
 
 # --- Database ---
@@ -115,6 +119,8 @@ def write_db():
 
 def check_power_profile():
     result = subprocess.run(["sudo", "powerprofilesctl", "get"], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"powerprofilesctl get failed with code {result.returncode}")
     return result.stdout.strip()
 
 
@@ -145,10 +151,10 @@ def parse_data():
 
 async def polling_loop():
     global SOLAR_DATA, POLLING_ACTIVE
-    sunblock_log("Waking Up...")
+    await sunblock_log("Waking Up...")
     if DATA_MAN:
-        sunblock_log("Data Management is " + str(DATA_MAN))
-        check_db()
+        await sunblock_log("Data Management is " + str(DATA_MAN))
+        await asyncio.to_thread(check_db)
 
     loop = asyncio.get_running_loop()
     while POLLING_ACTIVE:
@@ -156,22 +162,23 @@ async def polling_loop():
             new_data = await loop.run_in_executor(None, parse_data)
             SOLAR_DATA = new_data  # atomic reference swap
         except Exception as e:
-            sunblock_log("Hardware error, stopping poll: " + str(e))
+            await sunblock_log("Hardware error, stopping poll: " + str(e))
             break
 
         if DATA_MAN:
             try:
                 await loop.run_in_executor(None, write_db)
             except Exception as e:
-                sunblock_log("DB write error (continuing): " + str(e))
+                await sunblock_log("DB write error (continuing): " + str(e))
 
         try:
             await sio.emit("solar_data", {**SOLAR_DATA, "ConnectedUsers": ACTIVE_USERS})
         except Exception as e:
-            sunblock_log("Socket emit error (continuing): " + str(e))
+            await sunblock_log("Socket emit error (continuing): " + str(e))
+
         await asyncio.sleep(READ_INTERVAL)
 
-    sunblock_log("Exiting polling loop.")
+    await sunblock_log("Exiting polling loop.")
 
 
 # --- App setup ---
@@ -185,7 +192,7 @@ async def lifespan(app: FastAPI):
     try:
         CONTROLLER = EpeverChargeController(CONTROLLER_PORT, CONTROLLER_SLAVE)
     except Exception as e:
-        sunblock_log("Failed to connect to controller: " + str(e))
+        await sunblock_log("Failed to connect to controller: " + str(e))
 
     ACTIVE_USERS_LOCK = asyncio.Lock()
 
@@ -193,7 +200,7 @@ async def lifespan(app: FastAPI):
         POLLING_ACTIVE = True
         POLLING_TASK = asyncio.create_task(polling_loop())
     else:
-        sunblock_log("Controller unavailable — polling disabled.")
+        await sunblock_log("Controller unavailable — polling disabled.")
 
     yield
 
@@ -206,7 +213,7 @@ async def lifespan(app: FastAPI):
             pass
     if DB_CONNECTION:
         DB_CONNECTION.close()
-    sunblock_log("Server shutting down.")
+    await sunblock_log("Server shutting down.")
 
 
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
@@ -218,42 +225,42 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 
+socket_app = socketio.ASGIApp(sio, app)
+
 if os.path.isdir(STATIC_DIR):
     from fastapi.staticfiles import StaticFiles
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
-socket_app = socketio.ASGIApp(sio, app)
-
 
 # --- REST endpoints ---
 
-@app.get("/")
+@app.get("/api/data")
 async def get_data():
     return JSONResponse(content=SOLAR_DATA, status_code=200)
 
 
-@app.get("/power-profile")
+@app.get("/api/power-profile")
 async def get_power_profile():
     loop = asyncio.get_running_loop()
     output = await loop.run_in_executor(None, check_power_profile)
     return JSONResponse(content={"body": "Current Profile: " + output}, status_code=200)
 
 
-@app.post("/performance-mode")
+@app.post("/api/performance-mode")
 async def set_performance():
     loop = asyncio.get_running_loop()
     output = await loop.run_in_executor(None, set_power_profile, "performance")
     return JSONResponse(content={"response": "Profile changed successfully to " + output}, status_code=200)
 
 
-@app.post("/power-saver-mode")
+@app.post("/api/power-saver-mode")
 async def set_power_saver():
     loop = asyncio.get_running_loop()
     output = await loop.run_in_executor(None, set_power_profile, "power-saver")
     return JSONResponse(content={"response": "Profile changed successfully to " + output}, status_code=200)
 
 
-@app.post("/balanced")
+@app.post("/api/balanced")
 async def set_balanced():
     loop = asyncio.get_running_loop()
     output = await loop.run_in_executor(None, set_power_profile, "balanced")
