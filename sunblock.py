@@ -39,7 +39,8 @@ load_dotenv()
 
 # --- Config ---
 
-CONTROLLER = EpeverChargeController(os.getenv("CONTROLLER_PORT", "/dev/ttyACM0"), int(os.getenv("CONTROLLER_SLAVE", 1)))
+CONTROLLER_PORT = os.getenv("CONTROLLER_PORT", "/dev/ttyACM0")
+CONTROLLER_SLAVE = int(os.getenv("CONTROLLER_SLAVE", 1))
 DATA_DIRECTORY = os.getenv("DATA_DIRECTORY", "/home/pc/SunblockData/")
 POWER_DRAW_SCRIPT_ADDR = os.getenv("POWER_DRAW_SCRIPT_ADDR", "/home/pc/power_scripts/powerdraw.sh")
 POWER_LOGS_FILE = DATA_DIRECTORY + "SunBlockCoreLogs.txt"
@@ -52,10 +53,13 @@ READ_INTERVAL = int(os.getenv("READ_INTERVAL", 1))  # seconds
 
 
 # --- State ---
+# CONTROLLER, ACTIVE_USERS_LOCK, POLLING_TASK initialised in lifespan
 
+CONTROLLER = None
 ACTIVE_USERS = 0
-ACTIVE_USERS_LOCK = asyncio.Lock()
-POLLING_ACTIVE = True
+ACTIVE_USERS_LOCK = None
+POLLING_ACTIVE = False
+POLLING_TASK = None
 DB_CONNECTION = None
 DB_CURSOR = None
 
@@ -78,6 +82,7 @@ SOLAR_DATA = {
 # --- Logging ---
 
 def sunblock_log(message):
+    os.makedirs(DATA_DIRECTORY, exist_ok=True)
     with open(POWER_LOGS_FILE, 'a') as f:
         f.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S") + ": " + message + "\n")
 
@@ -103,8 +108,7 @@ def check_db():
 
 def write_db():
     placeholders = ", ".join(["?"] * len(SOLAR_DATA))
-    db_query = f"INSERT INTO {DB_TABLE_NAME} VALUES ({placeholders})"
-    DB_CURSOR.execute(db_query, list(SOLAR_DATA.values()))
+    DB_CURSOR.execute(f"INSERT INTO {DB_TABLE_NAME} VALUES ({placeholders})", list(SOLAR_DATA.values()))
     DB_CONNECTION.commit()
 
 
@@ -121,50 +125,77 @@ def set_power_profile(profile):
 
 
 def parse_data():
-    SOLAR_DATA["Timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    SOLAR_DATA["PVVoltage"] = CONTROLLER.get_solar_voltage()
-    SOLAR_DATA["PVCurrent"] = CONTROLLER.get_solar_current()
-    SOLAR_DATA["PVPower"] = CONTROLLER.get_solar_power()
-    SOLAR_DATA["BattVoltage"] = CONTROLLER.get_battery_voltage()
-    SOLAR_DATA["BattTemperature"] = CONTROLLER.get_battery_temperature()
-    SOLAR_DATA["BattChargePower"] = CONTROLLER.get_battery_power()
-    SOLAR_DATA["BattOverallCurrent"] = CONTROLLER.get_battery_current()
-    SOLAR_DATA["BattPercentage"] = CONTROLLER.get_battery_state_of_charge()
-    SOLAR_DATA["LoadPower"] = CONTROLLER.get_load_power()
-    result = subprocess.run(POWER_DRAW_SCRIPT_ADDR, capture_output=True)
-    SOLAR_DATA["CPUPowerDraw"] = result.stdout.decode().replace("W", "").strip()
-    SOLAR_DATA["PowerProfile"] = check_power_profile()
+    data = {}
+    data["Timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    data["PVVoltage"] = CONTROLLER.get_solar_voltage()
+    data["PVCurrent"] = CONTROLLER.get_solar_current()
+    data["PVPower"] = CONTROLLER.get_solar_power()
+    data["BattVoltage"] = CONTROLLER.get_battery_voltage()
+    data["BattTemperature"] = CONTROLLER.get_battery_temperature()
+    data["BattChargePower"] = CONTROLLER.get_battery_power()
+    data["BattOverallCurrent"] = CONTROLLER.get_battery_current()
+    data["BattPercentage"] = CONTROLLER.get_battery_state_of_charge()
+    data["LoadPower"] = CONTROLLER.get_load_power()
+    result = subprocess.run([POWER_DRAW_SCRIPT_ADDR], capture_output=True)
+    data["CPUPowerDraw"] = result.stdout.decode().replace("W", "").strip()
+    data["PowerProfile"] = check_power_profile()
+    return data
 
 
 async def polling_loop():
-    global POLLING_ACTIVE
+    global SOLAR_DATA, POLLING_ACTIVE
     sunblock_log("Waking Up...")
     if DATA_MAN:
         sunblock_log("Data Management is " + str(DATA_MAN))
         check_db()
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     while POLLING_ACTIVE:
         try:
-            await loop.run_in_executor(None, parse_data)
-            if DATA_MAN:
-                write_db()
-            await sio.emit("solar_data", {**SOLAR_DATA, "ConnectedUsers": ACTIVE_USERS})
+            new_data = await loop.run_in_executor(None, parse_data)
+            SOLAR_DATA = new_data  # atomic reference swap
         except Exception as e:
-            sunblock_log("Error during polling: " + str(e))
+            sunblock_log("Hardware error, stopping poll: " + str(e))
             POLLING_ACTIVE = False
             break
+
+        if DATA_MAN:
+            try:
+                await loop.run_in_executor(None, write_db)
+            except Exception as e:
+                sunblock_log("DB write error (continuing): " + str(e))
+
+        await sio.emit("solar_data", {**SOLAR_DATA, "ConnectedUsers": ACTIVE_USERS})
         await asyncio.sleep(READ_INTERVAL)
 
-    sunblock_log("Exiting polling loop. Controller unavailable.")
+    sunblock_log("Exiting polling loop.")
 
 
 # --- App setup ---
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    asyncio.create_task(polling_loop())
+    global CONTROLLER, ACTIVE_USERS_LOCK, POLLING_ACTIVE, POLLING_TASK
+
+    os.makedirs(DATA_DIRECTORY, exist_ok=True)
+
+    try:
+        CONTROLLER = EpeverChargeController(CONTROLLER_PORT, CONTROLLER_SLAVE)
+    except Exception as e:
+        sunblock_log("Failed to connect to controller: " + str(e))
+
+    ACTIVE_USERS_LOCK = asyncio.Lock()
+    POLLING_ACTIVE = True
+    POLLING_TASK = asyncio.create_task(polling_loop())
+
     yield
+
+    POLLING_ACTIVE = False
+    POLLING_TASK.cancel()
+    try:
+        await POLLING_TASK
+    except asyncio.CancelledError:
+        pass
     if DB_CONNECTION:
         DB_CONNECTION.close()
     sunblock_log("Server shutting down.")
@@ -195,28 +226,28 @@ async def get_data():
 
 @app.get("/power-profile")
 async def get_power_profile():
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     output = await loop.run_in_executor(None, check_power_profile)
     return JSONResponse(content={"body": "Current Profile: " + output}, status_code=200)
 
 
 @app.post("/performance-mode")
 async def set_performance():
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     output = await loop.run_in_executor(None, set_power_profile, "performance")
     return JSONResponse(content={"response": "Profile changed successfully to " + output}, status_code=200)
 
 
 @app.post("/power-saver-mode")
 async def set_power_saver():
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     output = await loop.run_in_executor(None, set_power_profile, "power-saver")
     return JSONResponse(content={"response": "Profile changed successfully to " + output}, status_code=200)
 
 
 @app.post("/balanced")
 async def set_balanced():
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     output = await loop.run_in_executor(None, set_power_profile, "balanced")
     return JSONResponse(content={"response": "Profile changed successfully to " + output}, status_code=200)
 
