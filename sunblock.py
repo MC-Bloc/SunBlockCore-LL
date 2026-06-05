@@ -82,7 +82,6 @@ SOLAR_DATA = {
 # --- Logging ---
 
 def sunblock_log(message):
-    os.makedirs(DATA_DIRECTORY, exist_ok=True)
     with open(POWER_LOGS_FILE, 'a') as f:
         f.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S") + ": " + message + "\n")
 
@@ -94,7 +93,7 @@ def check_db():
     if DB_CONNECTION is not None and DB_CURSOR is not None:
         return
     create_table = not os.path.isfile(DB_NAME)
-    DB_CONNECTION = sqlite3.connect(DB_NAME)
+    DB_CONNECTION = sqlite3.connect(DB_NAME, check_same_thread=False)
     DB_CURSOR = DB_CONNECTION.cursor()
     if create_table:
         DB_CURSOR.execute(
@@ -120,7 +119,9 @@ def check_power_profile():
 
 
 def set_power_profile(profile):
-    subprocess.run(["sudo", "powerprofilesctl", "set", profile])
+    result = subprocess.run(["sudo", "powerprofilesctl", "set", profile])
+    if result.returncode != 0:
+        raise RuntimeError(f"powerprofilesctl set {profile} failed with code {result.returncode}")
     return check_power_profile()
 
 
@@ -156,7 +157,6 @@ async def polling_loop():
             SOLAR_DATA = new_data  # atomic reference swap
         except Exception as e:
             sunblock_log("Hardware error, stopping poll: " + str(e))
-            POLLING_ACTIVE = False
             break
 
         if DATA_MAN:
@@ -165,7 +165,10 @@ async def polling_loop():
             except Exception as e:
                 sunblock_log("DB write error (continuing): " + str(e))
 
-        await sio.emit("solar_data", {**SOLAR_DATA, "ConnectedUsers": ACTIVE_USERS})
+        try:
+            await sio.emit("solar_data", {**SOLAR_DATA, "ConnectedUsers": ACTIVE_USERS})
+        except Exception as e:
+            sunblock_log("Socket emit error (continuing): " + str(e))
         await asyncio.sleep(READ_INTERVAL)
 
     sunblock_log("Exiting polling loop.")
@@ -185,17 +188,22 @@ async def lifespan(app: FastAPI):
         sunblock_log("Failed to connect to controller: " + str(e))
 
     ACTIVE_USERS_LOCK = asyncio.Lock()
-    POLLING_ACTIVE = True
-    POLLING_TASK = asyncio.create_task(polling_loop())
+
+    if CONTROLLER is not None:
+        POLLING_ACTIVE = True
+        POLLING_TASK = asyncio.create_task(polling_loop())
+    else:
+        sunblock_log("Controller unavailable — polling disabled.")
 
     yield
 
-    POLLING_ACTIVE = False
-    POLLING_TASK.cancel()
-    try:
-        await POLLING_TASK
-    except asyncio.CancelledError:
-        pass
+    if POLLING_TASK is not None:
+        POLLING_ACTIVE = False
+        POLLING_TASK.cancel()
+        try:
+            await POLLING_TASK
+        except asyncio.CancelledError:
+            pass
     if DB_CONNECTION:
         DB_CONNECTION.close()
     sunblock_log("Server shutting down.")
@@ -212,7 +220,7 @@ app.add_middleware(
 
 if os.path.isdir(STATIC_DIR):
     from fastapi.staticfiles import StaticFiles
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
 socket_app = socketio.ASGIApp(sio, app)
 
