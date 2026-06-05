@@ -19,6 +19,8 @@ Run with:
 
 Install dependencies:
     pip install fastapi uvicorn python-socketio epevermodbus python-dotenv
+
+Requires Python 3.9+ (uses asyncio.to_thread).
 '''
 
 import asyncio
@@ -84,6 +86,7 @@ SOLAR_DATA = {
 async def sunblock_log(message):
     line = datetime.now().strftime("%Y-%m-%d %H:%M:%S") + ": " + message + "\n"
     await asyncio.to_thread(_write_log, line)
+
 
 def _write_log(line):
     with open(POWER_LOGS_FILE, 'a') as f:
@@ -227,10 +230,6 @@ app.add_middleware(
 
 socket_app = socketio.ASGIApp(sio, app)
 
-if os.path.isdir(STATIC_DIR):
-    from fastapi.staticfiles import StaticFiles
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
-
 
 # --- REST endpoints ---
 
@@ -265,6 +264,11 @@ async def set_balanced():
     loop = asyncio.get_running_loop()
     output = await loop.run_in_executor(None, set_power_profile, "balanced")
     return JSONResponse(content={"response": "Profile changed successfully to " + output}, status_code=200)
+
+
+if os.path.isdir(STATIC_DIR):
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
 
 # --- Socket.IO events ---
