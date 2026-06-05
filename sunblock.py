@@ -45,11 +45,11 @@ CONTROLLER_PORT = os.getenv("CONTROLLER_PORT", "/dev/ttyACM0")
 CONTROLLER_SLAVE = int(os.getenv("CONTROLLER_SLAVE", 1))
 DATA_DIRECTORY = os.getenv("DATA_DIRECTORY", "/home/pc/SunblockData/")
 POWER_DRAW_SCRIPT_ADDR = os.getenv("POWER_DRAW_SCRIPT_ADDR", "/home/pc/power_scripts/powerdraw.sh")
-POWER_LOGS_FILE = DATA_DIRECTORY + "SunBlockCoreLogs.txt"
+POWER_LOGS_FILE = os.path.join(DATA_DIRECTORY, "SunBlockCoreLogs.txt")
 STATIC_DIR = os.getenv("STATIC_DIR", "/home/pc/GitHub/SunBlockExpress/public")
 
 DATA_MAN = os.getenv("DATA_MAN", "true").lower() == "true"
-DB_NAME = DATA_DIRECTORY + "SunBlockCore-LL.db"
+DB_NAME = os.path.join(DATA_DIRECTORY, "SunBlockCore-LL.db")
 DB_TABLE_NAME = "solardata"
 READ_INTERVAL = int(os.getenv("READ_INTERVAL", 1))  # seconds
 
@@ -66,7 +66,7 @@ DB_CONNECTION = None
 DB_CURSOR = None
 
 SOLAR_DATA = {
-    "Timestamp": 0,
+    "Timestamp": "",
     "PVVoltage": 0,
     "PVCurrent": 0,
     "PVPower": 0,
