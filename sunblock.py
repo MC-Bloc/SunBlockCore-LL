@@ -33,7 +33,6 @@ import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from epevermodbus.driver import EpeverChargeController
 
 load_dotenv()
@@ -55,6 +54,8 @@ READ_INTERVAL = int(os.getenv("READ_INTERVAL", 1))  # seconds
 # --- State ---
 
 ACTIVE_USERS = 0
+ACTIVE_USERS_LOCK = asyncio.Lock()
+POLLING_ACTIVE = True
 DB_CONNECTION = None
 DB_CURSOR = None
 
@@ -87,9 +88,10 @@ def check_db():
     global DB_CONNECTION, DB_CURSOR
     if DB_CONNECTION is not None and DB_CURSOR is not None:
         return
+    create_table = not os.path.isfile(DB_NAME)
     DB_CONNECTION = sqlite3.connect(DB_NAME)
     DB_CURSOR = DB_CONNECTION.cursor()
-    if not os.path.isfile(DB_NAME):
+    if create_table:
         DB_CURSOR.execute(
             "CREATE TABLE solardata("
             "Timestamp text, PVVoltage real, PVCurrent real, PVPower real, "
@@ -100,15 +102,22 @@ def check_db():
 
 
 def write_db():
-    db_query = "INSERT INTO " + DB_TABLE_NAME + " VALUES " + str(tuple(SOLAR_DATA.values()))
-    DB_CURSOR.execute(db_query)
+    placeholders = ", ".join(["?"] * len(SOLAR_DATA))
+    db_query = f"INSERT INTO {DB_TABLE_NAME} VALUES ({placeholders})"
+    DB_CURSOR.execute(db_query, list(SOLAR_DATA.values()))
     DB_CONNECTION.commit()
 
 
 # --- Hardware polling ---
 
 def check_power_profile():
-    return os.popen("sudo powerprofilesctl get").read().strip()
+    result = subprocess.run(["sudo", "powerprofilesctl", "get"], capture_output=True, text=True)
+    return result.stdout.strip()
+
+
+def set_power_profile(profile):
+    subprocess.run(["sudo", "powerprofilesctl", "set", profile])
+    return check_power_profile()
 
 
 def parse_data():
@@ -128,13 +137,14 @@ def parse_data():
 
 
 async def polling_loop():
+    global POLLING_ACTIVE
     sunblock_log("Waking Up...")
     if DATA_MAN:
         sunblock_log("Data Management is " + str(DATA_MAN))
         check_db()
 
     loop = asyncio.get_event_loop()
-    while CONTROLLER is not None:
+    while POLLING_ACTIVE:
         try:
             await loop.run_in_executor(None, parse_data)
             if DATA_MAN:
@@ -142,6 +152,8 @@ async def polling_loop():
             await sio.emit("solar_data", {**SOLAR_DATA, "ConnectedUsers": ACTIVE_USERS})
         except Exception as e:
             sunblock_log("Error during polling: " + str(e))
+            POLLING_ACTIVE = False
+            break
         await asyncio.sleep(READ_INTERVAL)
 
     sunblock_log("Exiting polling loop. Controller unavailable.")
@@ -168,6 +180,7 @@ app.add_middleware(
 )
 
 if os.path.isdir(STATIC_DIR):
+    from fastapi.staticfiles import StaticFiles
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 socket_app = socketio.ASGIApp(sio, app)
@@ -177,34 +190,35 @@ socket_app = socketio.ASGIApp(sio, app)
 
 @app.get("/")
 async def get_data():
-    return JSONResponse(content=SOLAR_DATA, status_code=201)
+    return JSONResponse(content=SOLAR_DATA, status_code=200)
 
 
 @app.get("/power-profile")
 async def get_power_profile():
-    output = check_power_profile()
-    return JSONResponse(content={"body": "Current Profile: " + output}, status_code=201)
+    loop = asyncio.get_event_loop()
+    output = await loop.run_in_executor(None, check_power_profile)
+    return JSONResponse(content={"body": "Current Profile: " + output}, status_code=200)
 
 
-@app.get("/performance-mode")
+@app.post("/performance-mode")
 async def set_performance():
-    subprocess.run(["sudo", "powerprofilesctl", "set", "performance"])
-    output = check_power_profile()
-    return JSONResponse(content={"response": "Profile changed successfully to " + output}, status_code=201)
+    loop = asyncio.get_event_loop()
+    output = await loop.run_in_executor(None, set_power_profile, "performance")
+    return JSONResponse(content={"response": "Profile changed successfully to " + output}, status_code=200)
 
 
-@app.get("/power-saver-mode")
+@app.post("/power-saver-mode")
 async def set_power_saver():
-    subprocess.run(["sudo", "powerprofilesctl", "set", "power-saver"])
-    output = check_power_profile()
-    return JSONResponse(content={"response": "Profile changed successfully to " + output}, status_code=201)
+    loop = asyncio.get_event_loop()
+    output = await loop.run_in_executor(None, set_power_profile, "power-saver")
+    return JSONResponse(content={"response": "Profile changed successfully to " + output}, status_code=200)
 
 
-@app.get("/balanced")
+@app.post("/balanced")
 async def set_balanced():
-    subprocess.run(["sudo", "powerprofilesctl", "set", "balanced"])
-    output = check_power_profile()
-    return JSONResponse(content={"response": "Profile changed successfully to " + output}, status_code=201)
+    loop = asyncio.get_event_loop()
+    output = await loop.run_in_executor(None, set_power_profile, "balanced")
+    return JSONResponse(content={"response": "Profile changed successfully to " + output}, status_code=200)
 
 
 # --- Socket.IO events ---
@@ -212,12 +226,14 @@ async def set_balanced():
 @sio.event
 async def connect(sid, environ):
     global ACTIVE_USERS
-    ACTIVE_USERS += 1
+    async with ACTIVE_USERS_LOCK:
+        ACTIVE_USERS += 1
     print("Client connected:", sid)
 
 
 @sio.event
 async def disconnect(sid):
     global ACTIVE_USERS
-    ACTIVE_USERS -= 1
+    async with ACTIVE_USERS_LOCK:
+        ACTIVE_USERS -= 1
     print("Client disconnected:", sid)
