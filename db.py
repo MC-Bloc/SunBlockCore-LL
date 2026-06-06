@@ -1,9 +1,10 @@
-"""SQLite persistence and application logging."""
+"""SQLite persistence, application logging, and history queries."""
 
 import asyncio
 import os
 import sqlite3
 from datetime import datetime
+from typing import Optional
 
 import config
 
@@ -104,3 +105,70 @@ def delete_setting(key: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+# ── History queries ───────────────────────────────────────────────────────────
+
+def query_history(
+    limit:   int = 100,
+    offset:  int = 0,
+    from_ts: Optional[str] = None,
+    to_ts:   Optional[str] = None,
+    order:   str = "desc",
+) -> dict:
+    """
+    Return a paginated slice of the solardata table.
+
+    Opens its own connection so it never contends with the write cursor
+    that is held by the polling loop.
+
+    Returns {"rows": [...], "total": N, "limit": N, "offset": N}.
+    If the database file does not exist yet (DATA_MAN=false or first run)
+    the empty payload is returned instead of raising.
+    """
+    empty = {"rows": [], "total": 0, "limit": limit, "offset": offset}
+    if not os.path.isfile(config.DB_NAME):
+        return empty
+
+    limit  = max(1, min(1000, limit))
+    offset = max(0, offset)
+
+    where_parts: list[str] = []
+    params: list = []
+    if from_ts:
+        where_parts.append("Timestamp >= ?")
+        params.append(from_ts)
+    if to_ts:
+        # If caller passed just a date (10 chars) extend to end of that day.
+        params.append(to_ts + " 23:59:59" if len(to_ts) == 10 else to_ts)
+        where_parts.append("Timestamp <= ?")
+
+    where     = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+    order_dir = "DESC" if order.lower() != "asc" else "ASC"
+
+    conn = sqlite3.connect(config.DB_NAME, check_same_thread=False)
+    conn.row_factory = None  # plain tuples — we'll zip with column names
+    try:
+        cur   = conn.cursor()
+        total = cur.execute(
+            f"SELECT COUNT(*) FROM {config.DB_TABLE_NAME} {where}", params
+        ).fetchone()[0]
+
+        cur.execute(
+            f"SELECT * FROM {config.DB_TABLE_NAME} {where}"
+            f" ORDER BY Timestamp {order_dir} LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        )
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description] if cur.description else []
+    except Exception:
+        return empty
+    finally:
+        conn.close()
+
+    return {
+        "rows":   [dict(zip(cols, row)) for row in rows],
+        "total":  total,
+        "limit":  limit,
+        "offset": offset,
+    }

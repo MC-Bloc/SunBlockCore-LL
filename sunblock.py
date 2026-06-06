@@ -33,11 +33,12 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import Optional
 
 import bcrypt as _bcrypt
 import socketio
 from epevermodbus.driver import EpeverChargeController
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -50,7 +51,7 @@ from auth import (
     check_session, create_token, verify_session,
     require_controller, require_real_controller,
 )
-from db import check_db, delete_setting, load_settings, save_setting, sunblock_log, write_db
+from db import check_db, delete_setting, load_settings, query_history, save_setting, sunblock_log, write_db
 from hardware import (
     apply_controller_params, check_power_profile,
     parse_data, read_controller_params,
@@ -203,6 +204,32 @@ async def auth_status(request: Request):
 @app.get("/api/data")
 async def get_data():
     return JSONResponse(content=config.SOLAR_DATA, status_code=200)
+
+
+@app.get("/api/data/history")
+async def get_data_history(
+    limit:   int                = 100,
+    offset:  int                = 0,
+    from_ts: Optional[str]      = Query(default=None, alias="from"),
+    to_ts:   Optional[str]      = Query(default=None, alias="to"),
+    order:   str                = "desc",
+):
+    """
+    Paginated history of solar readings from the SQLite database.
+
+    Query params:
+      limit   — rows per page (1–1000, default 100)
+      offset  — row index to start from (default 0)
+      from    — optional ISO date/datetime lower bound (e.g. 2025-05-11)
+      to      — optional ISO date/datetime upper bound (e.g. 2025-05-15)
+      order   — "desc" (newest first, default) or "asc" (oldest first)
+
+    Returns {"rows": [...], "total": N, "limit": N, "offset": N}.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None, query_history, limit, offset, from_ts, to_ts, order
+    )
 
 
 # Settings

@@ -152,6 +152,24 @@
     /* Feedback banners */
     .feedback-ok  { background: rgba(16,185,129,0.12); color: var(--green); border: 1px solid rgba(16,185,129,0.25); border-radius: 6px; padding: 8px 14px; font-size: 0.82rem; margin-bottom: 14px; }
     .feedback-err { background: rgba(239,68,68,0.12);  color: var(--red);   border: 1px solid rgba(239,68,68,0.25);  border-radius: 6px; padding: 8px 14px; font-size: 0.82rem; margin-bottom: 14px; }
+
+    /* History table */
+    .hist-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+    .hist-input   { padding: 6px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.84rem; outline: none; }
+    .hist-input:focus { border-color: var(--accent); }
+    .hist-select  { padding: 6px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.84rem; outline: none; cursor: pointer; }
+    .hist-summary { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 0.8rem; color: var(--muted); margin-bottom: 10px; }
+    .hist-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+    .hist-table   { width: 100%; border-collapse: collapse; font-size: 0.8rem; white-space: nowrap; }
+    .hist-table th { padding: 8px 12px; text-align: right; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); background: var(--surface); border-bottom: 1px solid var(--border); }
+    .hist-table th:first-child { text-align: left; }
+    .hist-table td { padding: 7px 12px; text-align: right; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+    .hist-table td:first-child { text-align: left; color: var(--muted); font-size: 0.75rem; }
+    .hist-table tr:last-child td { border-bottom: none; }
+    .hist-table tr:hover td { background: rgba(255,255,255,0.025); }
+    .hist-empty { padding: 40px; text-align: center; color: var(--muted); font-size: 0.88rem; }
+    .hist-placeholder { text-align: center; padding: 48px 20px; color: var(--muted); }
+    .hist-placeholder .icon { font-size: 1.8rem; margin-bottom: 10px; }
   </style>
 </head>
 <body>
@@ -173,6 +191,7 @@
     <div class="tab" :class="tab === 'parameters' && 'active'" @click="switchTab('parameters')">Parameters</div>
     <div class="tab" :class="tab === 'energy'     && 'active'" @click="switchTab('energy')">Energy</div>
     <div class="tab" :class="tab === 'settings'   && 'active'" @click="switchTab('settings')">Settings</div>
+    <div class="tab" :class="tab === 'history'    && 'active'" @click="switchTab('history')">History</div>
   </nav>
 
   <!-- ══ LIVE ══ -->
@@ -481,6 +500,110 @@
     </template>
   </div>
 
+  <!-- ══ HISTORY ══ -->
+  <div class="panel" x-show="tab === 'history'" style="max-width:1200px">
+
+    <!-- Toolbar -->
+    <div class="hist-toolbar">
+      <input class="hist-input" type="date" x-model="histFilter.from" title="From date" />
+      <input class="hist-input" type="date" x-model="histFilter.to"   title="To date" />
+      <select class="hist-select" x-model.number="histFilter.limit">
+        <option value="50">50 rows</option>
+        <option value="100">100 rows</option>
+        <option value="250">250 rows</option>
+        <option value="500">500 rows</option>
+      </select>
+      <select class="hist-select" x-model="histFilter.order">
+        <option value="desc">Newest first</option>
+        <option value="asc">Oldest first</option>
+      </select>
+      <button class="btn btn-action" @click="loadHistory(0)" :disabled="histLoading">
+        <span x-text="histLoading ? 'Loading…' : 'Load'"></span>
+      </button>
+      <button class="btn btn-action" x-show="history" @click="loadHistory(history.offset)">↻</button>
+    </div>
+
+    <!-- Summary + pagination -->
+    <template x-if="history">
+      <div>
+        <div class="hist-summary">
+          <span x-show="history.total === 0" style="color:var(--muted)">No records found.</span>
+          <span x-show="history.total > 0">
+            Showing
+            <strong x-text="history.total === 0 ? 0 : history.offset + 1"></strong>–<strong x-text="Math.min(history.offset + history.limit, history.total)"></strong>
+            of <strong x-text="history.total.toLocaleString()"></strong> records
+          </span>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-action"
+                    :disabled="history.offset === 0 || histLoading"
+                    @click="histPage(-1)">← Prev</button>
+            <button class="btn btn-action"
+                    :disabled="history.offset + history.limit >= history.total || histLoading"
+                    @click="histPage(1)">Next →</button>
+          </div>
+        </div>
+
+        <div class="hist-table-wrap">
+          <template x-if="history.rows.length === 0">
+            <div class="hist-empty">No records in this range.</div>
+          </template>
+          <template x-if="history.rows.length > 0">
+            <table class="hist-table">
+              <thead>
+                <tr>
+                  <th style="text-align:left">Timestamp</th>
+                  <th>PV V</th>
+                  <th>PV A</th>
+                  <th>PV W</th>
+                  <th>Batt V</th>
+                  <th>Batt °C</th>
+                  <th>Charge W</th>
+                  <th>SOC %</th>
+                  <th>Batt A</th>
+                  <th>Load W</th>
+                  <th>CPU W</th>
+                  <th style="text-align:left">Profile</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="(row, i) in history.rows" :key="history.offset + i">
+                  <tr>
+                    <td x-text="row.Timestamp"></td>
+                    <td x-text="row.PVVoltage     != null ? Number(row.PVVoltage).toFixed(2)          : '–'"></td>
+                    <td x-text="row.PVCurrent     != null ? Number(row.PVCurrent).toFixed(2)          : '–'"></td>
+                    <td x-text="row.PVPower       != null ? Number(row.PVPower).toFixed(1)            : '–'"></td>
+                    <td x-text="row.BattVoltage   != null ? Number(row.BattVoltage).toFixed(2)        : '–'"></td>
+                    <td x-text="row.BattTemperature != null ? Number(row.BattTemperature).toFixed(1)  : '–'"></td>
+                    <td x-text="row.BattChargePower != null ? Number(row.BattChargePower).toFixed(1)  : '–'"></td>
+                    <td x-text="row.BattPercentage"></td>
+                    <td x-text="row.BattOverallCurrent != null ? Number(row.BattOverallCurrent).toFixed(2) : '–'"></td>
+                    <td x-text="row.LoadPower     != null ? Number(row.LoadPower).toFixed(1)          : '–'"></td>
+                    <td x-text="row.CPUPowerDraw  != null ? Number(row.CPUPowerDraw).toFixed(1)       : '–'"></td>
+                    <td style="text-align:left" x-text="row.PowerProfile || '–'"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </template>
+        </div>
+      </div>
+    </template>
+
+    <!-- Initial state — nothing loaded yet -->
+    <template x-if="!history && !histLoading">
+      <div class="card hist-placeholder">
+        <div class="icon">🗄</div>
+        <div>Select a date range and click <strong>Load</strong> to browse records.</div>
+        <div style="font-size:0.78rem;margin-top:6px;color:var(--muted)">Leave dates empty to show the most recent rows.</div>
+      </div>
+    </template>
+
+    <template x-if="histLoading && !history">
+      <div class="card hist-placeholder"><div>Loading…</div></div>
+    </template>
+
+  </div>
+
   <!-- ══ LOGIN MODAL ══ -->
   <div class="overlay" :class="loginOpen && 'open'" @click.self="loginOpen = false">
     <div class="modal" @keydown.escape.window="loginOpen = false">
@@ -590,6 +713,11 @@
       pwForm: { current: '', next: '', confirm: '' },
       pwMsg: '', pwMsgOk: true,
 
+      // History
+      history:    null,
+      histFilter: { from: '', to: '', limit: 100, order: 'desc' },
+      histLoading: false,
+
       // Login modal
       loginOpen:  false,
       loginUser:  '',
@@ -687,9 +815,10 @@
       // ── Tab switch ──
       switchTab(name) {
         this.tab = name;
-        if (name === 'parameters' && !this.params)  this.loadParams();
-        if (name === 'energy'     && !this.stats)   this.loadStats();
+        if (name === 'parameters' && !this.params)   this.loadParams();
+        if (name === 'energy'     && !this.stats)    this.loadStats();
         if (name === 'settings')                     this.loadSettings();
+        if (name === 'history'    && !this.history)  this.loadHistory(0);
       },
 
       // ── Parameters ──
@@ -825,6 +954,31 @@
       },
 
       fmt(v) { return v != null ? Number(v).toFixed(2) : '–'; },
+
+      // ── History ──
+      async loadHistory(offset) {
+        if (offset === undefined) offset = 0;
+        this.histLoading = true;
+        try {
+          const p = new URLSearchParams({
+            limit:  this.histFilter.limit,
+            offset: offset,
+            order:  this.histFilter.order,
+          });
+          if (this.histFilter.from) p.set('from', this.histFilter.from);
+          if (this.histFilter.to)   p.set('to',   this.histFilter.to);
+          const res = await fetch('/api/data/history?' + p);
+          if (res.ok) this.history = await res.json();
+        } catch { /* swallow — server down */ }
+        finally  { this.histLoading = false; }
+      },
+
+      histPage(dir) {
+        if (!this.history) return;
+        const next = this.history.offset + dir * this.history.limit;
+        if (next < 0 || next >= this.history.total) return;
+        this.loadHistory(next);
+      },
 
     })); // Alpine.data
   }); // alpine:init
