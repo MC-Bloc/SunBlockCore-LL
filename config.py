@@ -15,13 +15,20 @@ load_dotenv()
 CONTROLLER_PORT  = os.getenv("CONTROLLER_PORT",  "/dev/ttyACM0")
 CONTROLLER_SLAVE = int(os.getenv("CONTROLLER_SLAVE", 1))
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-DATA_DIRECTORY    = os.getenv("DATA_DIRECTORY",    "/home/pc/SunblockData/")
-POWER_DRAW_SCRIPT = os.getenv("POWER_DRAW_SCRIPT_ADDR", "/home/pc/power_scripts/powerdraw.sh")
-POWER_LOGS_FILE   = os.path.join(DATA_DIRECTORY, "SunBlockCoreLogs.txt")
-DB_NAME           = os.path.join(DATA_DIRECTORY, "SunBlockCore-LL.db")
-DB_TABLE_NAME     = "solardata"
-SETTINGS_DB_NAME  = os.path.join(DATA_DIRECTORY, "sunblock_settings.db")
+# ── Paths ���────────────────────────────────────────────────────────────────────
+DATA_DIRECTORY    = os.getenv("DATA_DIRECTORY")
+POWER_DRAW_SCRIPT = os.getenv("POWER_DRAW_SCRIPT_ADDR")
+
+if not DATA_DIRECTORY:
+    raise ValueError(
+        "DATA_DIRECTORY is not set. "
+        "Add DATA_DIRECTORY=/path/to/your/data to your .env file."
+    )
+
+POWER_LOGS_FILE  = os.path.join(DATA_DIRECTORY, "SunBlockCoreLogs.txt")
+DB_NAME          = os.path.join(DATA_DIRECTORY, "SunBlockCore-LL.db")
+DB_TABLE_NAME    = "solardata"
+SETTINGS_DB_NAME = os.path.join(DATA_DIRECTORY, "sunblock_settings.db")
 
 # ── Data collection ───────────────────────────────────────────────────────────
 DATA_MAN      = os.getenv("DATA_MAN", "true").lower() == "true"
