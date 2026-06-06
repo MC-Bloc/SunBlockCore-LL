@@ -54,7 +54,8 @@ from auth import (
     check_session, create_token, verify_session,
     require_controller, require_real_controller,
 )
-from db import apply_data_directory, check_db, delete_setting, load_settings, query_history, save_setting, sunblock_log, write_db
+from db import apply_data_directory, check_db, delete_setting, load_settings, query_history, query_visualize, save_setting, sunblock_log, write_db
+from db import VIZ_FIELD_META
 from hardware import (
     apply_controller_params, check_power_profile,
     parse_data, read_controller_params,
@@ -199,6 +200,7 @@ async def index(request: Request):
         "env_defaults":     config.ENV_DEFAULTS,
         "data_directory":   config.DATA_DIRECTORY or "",
         "admin_mode":       False,
+        "viz_fields":       VIZ_FIELD_META,
     })
 
 async def _admin_page(request: Request):
@@ -211,6 +213,7 @@ async def _admin_page(request: Request):
         "env_defaults":     config.ENV_DEFAULTS,
         "data_directory":   config.DATA_DIRECTORY or "",
         "admin_mode":       True,
+        "viz_fields":       VIZ_FIELD_META,
     })
 
 # Register the admin route only if ADMIN_PATH is configured.
@@ -293,6 +296,32 @@ def _db_guard():
             status_code=404,
             detail="Database file not found. DATA_DIRECTORY may not be configured or data collection may be disabled.",
         )
+
+@app.get("/api/data/visualize/fields")
+async def get_viz_fields():
+    """Return the list of plottable fields with label and unit metadata."""
+    return VIZ_FIELD_META
+
+@app.get("/api/data/visualize")
+async def get_visualize(
+    fields:        str           = Query(default="BattPercentage,PVPower,LoadPower"),
+    from_ts:       Optional[str] = Query(default=None, alias="from"),
+    to_ts:         Optional[str] = Query(default=None, alias="to"),
+    sample:        int           = Query(default=1,  ge=1, le=3600),
+    smooth:        int           = Query(default=0,  ge=0, le=300),
+    filter_spikes: bool          = Query(default=True),
+):
+    """
+    Time-series data for the Visualize tab.
+
+    Processing: date filter → row resampling → spike filter → smoothing.
+    Returns timestamps + one series object per requested field.
+    """
+    field_list = [f.strip() for f in fields.split(",") if f.strip()]
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None, query_visualize, field_list, from_ts, to_ts, sample, smooth, filter_spikes
+    )
 
 @app.get("/api/data/download")
 async def download_db(user: str = Depends(verify_session)):

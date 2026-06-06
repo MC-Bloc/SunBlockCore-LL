@@ -129,6 +129,173 @@ def apply_data_directory(path: str) -> None:
     config.DB_NAME         = os.path.join(path, "SunBlockCore-LL.db")
 
 
+# ── Visualisation queries ─────────────────────────────────────────────────────
+
+# All plottable numeric fields and their display metadata
+VIZ_FIELD_META: dict = {
+    "PVVoltage":          {"label": "PV Voltage",           "unit": "V"},
+    "PVCurrent":          {"label": "PV Current",           "unit": "A"},
+    "PVPower":            {"label": "PV Power",             "unit": "W"},
+    "BattVoltage":        {"label": "Battery Voltage",      "unit": "V"},
+    "BattTemperature":    {"label": "Battery Temperature",  "unit": "°C"},
+    "BattChargePower":    {"label": "Battery Charge Power", "unit": "W"},
+    "LoadPower":          {"label": "Load Power",           "unit": "W"},
+    "BattPercentage":     {"label": "Battery %",            "unit": "%"},
+    "BattOverallCurrent": {"label": "Battery Current",      "unit": "A"},
+    "CPUPowerDraw":       {"label": "CPU Power Draw",       "unit": "W"},
+}
+
+# Fields known to produce occasional hardware spikes; values above these
+# thresholds are replaced with the most recent valid reading (forward-fill).
+_SPIKE_THRESHOLDS: dict = {
+    "PVVoltage":  25.0,
+    "PVCurrent":  5.0,
+    "PVPower":    100.0,
+    "BattVoltage": 15.0,
+}
+
+
+def _filter_spikes(values: list, field: str) -> list:
+    threshold = _SPIKE_THRESHOLDS.get(field)
+    if threshold is None:
+        return values
+    result, last_valid = [], None
+    for v in values:
+        if v is not None and v > threshold and last_valid is not None:
+            result.append(last_valid)
+        else:
+            result.append(v)
+            if v is not None:
+                last_valid = v
+    return result
+
+
+def _moving_average(values: list, k: int) -> list:
+    if k <= 1:
+        return values
+    result, window = [], []
+    for v in values:
+        if v is None:
+            result.append(None)
+            continue
+        window.append(v)
+        if len(window) > k:
+            window.pop(0)
+        result.append(sum(window) / len(window))
+    return result
+
+
+def query_visualize(
+    fields:        list,
+    from_ts:       Optional[str] = None,
+    to_ts:         Optional[str] = None,
+    sample:        int  = 1,      # keep every Nth row (matches 1 Hz write rate)
+    smooth:        int  = 0,      # moving-average window in samples (0 = off)
+    filter_spikes: bool = True,
+) -> dict:
+    """
+    Return time-series data ready for Plotly.
+
+    Processing pipeline (matches SunBlock_DataProcessing.ipynb):
+      1. Date-range filter via SQL WHERE
+      2. Row-based resampling  — take every ``sample``th row
+      3. Spike filtering       — clamp hardware glitches on noisy fields
+      4. Moving-average smooth — window of ``smooth`` samples (optional)
+
+    Returns::
+
+        {
+          "timestamps": ["2025-05-30 10:00:00", ...],
+          "series": {
+            "PVPower": {"values": [...], "label": "PV Power", "unit": "W"},
+            ...
+          },
+          "total_rows":   86400,
+          "sampled_rows": 17280,
+        }
+    """
+    empty: dict = {
+        "timestamps": [], "series": {},
+        "total_rows": 0, "sampled_rows": 0,
+    }
+    if not config.DB_NAME or not os.path.isfile(config.DB_NAME):
+        return empty
+
+    # Sanitise — only allow known numeric fields
+    valid = [f for f in fields if f in VIZ_FIELD_META]
+    if not valid:
+        return empty
+
+    col_sql = "Timestamp, " + ", ".join(valid)
+    where_parts: list = []
+    params:      list = []
+    if from_ts:
+        where_parts.append("Timestamp >= ?")
+        params.append(from_ts)
+    if to_ts:
+        where_parts.append("Timestamp <= ?")
+        params.append(to_ts + " 23:59:59" if len(to_ts) == 10 else to_ts)
+
+    where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+    conn = sqlite3.connect(config.DB_NAME, check_same_thread=False)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT {col_sql} FROM {config.DB_TABLE_NAME} {where} ORDER BY Timestamp ASC",
+            params,
+        )
+        rows = cur.fetchall()
+    except Exception:
+        return empty
+    finally:
+        conn.close()
+
+    total_rows = len(rows)
+
+    # Resample
+    step = max(1, sample)
+    rows = rows[::step]
+    sampled_rows = len(rows)
+
+    if not rows:
+        return {
+            "timestamps": [],
+            "series": {
+                f: {"values": [], **VIZ_FIELD_META[f]} for f in valid
+            },
+            "total_rows": total_rows,
+            "sampled_rows": 0,
+        }
+
+    timestamps = [row[0] for row in rows]
+
+    series: dict = {}
+    for col_idx, field in enumerate(valid, 1):
+        # Parse to float; keep None for missing
+        values: list = []
+        for row in rows:
+            v = row[col_idx]
+            try:
+                values.append(float(v) if v is not None else None)
+            except (TypeError, ValueError):
+                values.append(None)
+
+        if filter_spikes:
+            values = _filter_spikes(values, field)
+        if smooth > 1:
+            values = _moving_average(values, smooth)
+
+        series[field] = {"values": values, **VIZ_FIELD_META[field]}
+
+    return {
+        "timestamps":   timestamps,
+        "series":       series,
+        "total_rows":   total_rows,
+        "sampled_rows": sampled_rows,
+    }
+
+
 # ── History queries ───────────────────────────────────────────────────────────
 
 def query_history(

@@ -175,7 +175,7 @@
 </head>
 <body>
 
-<div x-data='sunblock({{ is_authenticated | tojson }}, {{ sim_mode | tojson }}, {{ env_defaults | tojson }}, {{ data_directory | tojson }}, {{ admin_mode | tojson }})'>
+<div x-data='sunblock({{ is_authenticated | tojson }}, {{ sim_mode | tojson }}, {{ env_defaults | tojson }}, {{ data_directory | tojson }}, {{ admin_mode | tojson }}, {{ viz_fields | tojson }})'>
 
   <!-- Header -->
   <header>
@@ -203,6 +203,9 @@
     </template>
     <template x-if="authed">
       <div class="tab" :class="tab === 'history'    && 'active'" @click="switchTab('history')">History</div>
+    </template>
+    <template x-if="authed">
+      <div class="tab" :class="tab === 'visualize'  && 'active'" @click="switchTab('visualize')">Visualize</div>
     </template>
   </nav>
 
@@ -695,6 +698,107 @@
 
   </div>
 
+  <!-- ══ VISUALIZE ══ -->
+  <div class="panel" x-show="tab === 'visualize'" style="max-width:1200px">
+
+    <!-- Controls card -->
+    <div class="settings-section" style="margin-bottom:16px">
+      <div class="settings-title">Chart Configuration</div>
+
+      <!-- Row 1: date range + sample rate + smoothing -->
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;padding:12px 0;border-bottom:1px solid var(--border)">
+
+        <div>
+          <div style="font-size:0.76rem;color:var(--muted);margin-bottom:4px">From</div>
+          <input class="hist-input" type="date" x-model="vizFilter.from" />
+        </div>
+        <div>
+          <div style="font-size:0.76rem;color:var(--muted);margin-bottom:4px">To</div>
+          <input class="hist-input" type="date" x-model="vizFilter.to" />
+        </div>
+
+        <div>
+          <div style="font-size:0.76rem;color:var(--muted);margin-bottom:4px">Sample every</div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input class="settings-input" type="number" min="1" max="3600" x-model.number="vizFilter.sample" style="width:70px" />
+            <span style="font-size:0.82rem;color:var(--muted)">s</span>
+          </div>
+        </div>
+
+        <div>
+          <div style="font-size:0.76rem;color:var(--muted);margin-bottom:4px">Smooth (MA window)</div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input class="settings-input" type="number" min="0" max="300" x-model.number="vizFilter.smooth" style="width:70px"
+                   :disabled="!vizFilter.smoothEnabled" />
+            <label class="toggle" title="Toggle smoothing" style="flex-shrink:0">
+              <input type="checkbox" x-model="vizFilter.smoothEnabled" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div>
+          <div style="font-size:0.76rem;color:var(--muted);margin-bottom:4px">Spike filter</div>
+          <label class="toggle" title="Remove hardware glitches on PV and battery readings">
+            <input type="checkbox" x-model="vizFilter.filterSpikes" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+      </div>
+
+      <!-- Row 2: variable checkboxes -->
+      <div style="padding:12px 0 8px">
+        <div style="font-size:0.76rem;color:var(--muted);margin-bottom:10px">Variables</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">
+          <template x-for="[key, meta] in Object.entries(vizFields)" :key="key">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.85rem;padding:6px 10px;border:1px solid var(--border);border-radius:6px;transition:border-color 0.15s"
+                   :style="vizSelected[key] ? 'border-color:var(--accent);background:rgba(245,158,11,0.06)' : ''">
+              <input type="checkbox" :checked="vizSelected[key]"
+                     @change="vizSelected[key] = $event.target.checked"
+                     style="accent-color:var(--accent)" />
+              <span>
+                <span x-text="meta.label"></span>
+                <span style="color:var(--muted);font-size:0.75rem" x-text="' (' + meta.unit + ')'"></span>
+              </span>
+            </label>
+          </template>
+        </div>
+      </div>
+
+      <!-- Plot button + feedback -->
+      <div style="display:flex;align-items:center;gap:12px;padding-top:8px">
+        <button class="btn btn-action" @click="plotViz()" :disabled="vizLoading"
+                style="padding:8px 20px;border-color:var(--accent);color:var(--accent)">
+          <span x-text="vizLoading ? 'Loading…' : 'Plot'"></span>
+        </button>
+        <span x-show="vizInfo" style="font-size:0.8rem;color:var(--muted)"
+              x-text="vizInfo ? vizInfo.sampled_rows.toLocaleString() + ' points plotted (' + vizInfo.total_rows.toLocaleString() + ' in range, sampled every ' + vizFilter.sample + 's)' : ''"></span>
+        <span x-show="vizError" class="feedback-err" style="margin:0" x-text="vizError"></span>
+      </div>
+    </div>
+
+    <!-- Chart -->
+    <div class="chart-wrap" x-show="vizHasData">
+      <div id="chart-viz"></div>
+    </div>
+
+    <!-- Empty state -->
+    <template x-if="!vizHasData && !vizLoading">
+      <div class="card hist-placeholder">
+        <div class="icon">📈</div>
+        <div>Select a date range and variables, then click <strong>Plot</strong>.</div>
+        <div style="font-size:0.78rem;margin-top:6px;color:var(--muted)">
+          Use the sample rate to reduce density — 5 s is a good starting point for day-long views.
+        </div>
+      </div>
+    </template>
+    <template x-if="vizLoading && !vizHasData">
+      <div class="card hist-placeholder"><div>Loading…</div></div>
+    </template>
+
+  </div>
+
   <!-- ══ LOGIN MODAL ══ -->
   <div class="overlay" :class="loginOpen && 'open'" @click.self="loginOpen = false">
     <div class="modal" @keydown.escape.window="loginOpen = false">
@@ -808,7 +912,7 @@
   };
 
   document.addEventListener('alpine:init', () => {
-    Alpine.data('sunblock', (initialAuth, initialSimMode, initialEnvDefaults, initialDataDir, initialAdminMode) => ({
+    Alpine.data('sunblock', (initialAuth, initialSimMode, initialEnvDefaults, initialDataDir, initialAdminMode, initialVizFields) => ({
 
       // ── State ──
       tab:          'live',
@@ -851,6 +955,24 @@
       loginUser:  '',
       loginPass:  '',
       loginError: '',
+
+      // Visualize
+      vizFields:   initialVizFields,
+      vizSelected: Object.fromEntries(
+        Object.keys(initialVizFields).map((k, i) =>
+          [k, ['BattPercentage', 'PVPower', 'LoadPower'].includes(k)]
+        )
+      ),
+      vizFilter: {
+        from: '', to: '',
+        sample: 5,
+        smooth: 15, smoothEnabled: false,
+        filterSpikes: true,
+      },
+      vizLoading: false,
+      vizHasData: false,
+      vizInfo:    null,
+      vizError:   '',
 
       // Edit modal
       editOpen:  false,
@@ -1034,6 +1156,78 @@
         if (name === 'energy'     && !this.stats)    this.loadStats();
         if (name === 'settings')                     this.loadSettings();
         if (name === 'history'    && !this.history)  this.loadHistory(0);
+      },
+
+      // ── Visualize ──
+      async plotViz() {
+        const selectedFields = Object.keys(this.vizSelected).filter(k => this.vizSelected[k]);
+        if (!selectedFields.length) { this.vizError = 'Select at least one variable.'; return; }
+        this.vizError   = '';
+        this.vizLoading = true;
+
+        try {
+          const p = new URLSearchParams({ fields: selectedFields.join(','), sample: this.vizFilter.sample });
+          if (this.vizFilter.from) p.set('from', this.vizFilter.from);
+          if (this.vizFilter.to)   p.set('to',   this.vizFilter.to);
+          if (this.vizFilter.smoothEnabled && this.vizFilter.smooth > 1)
+            p.set('smooth', this.vizFilter.smooth);
+          p.set('filter_spikes', this.vizFilter.filterSpikes);
+
+          const res  = await fetch('/api/data/visualize?' + p);
+          const data = await res.json();
+
+          if (!res.ok) { this.vizError = data.detail || 'Failed to load data.'; return; }
+          if (!data.timestamps.length) { this.vizError = 'No data found for this range.'; return; }
+
+          const palette = ['#10b981','#f59e0b','#60a5fa','#f87171','#a78bfa',
+                           '#fb923c','#34d399','#c084fc','#94a3b8','#4ade80'];
+
+          const traces = Object.entries(data.series).map(([key, series], i) => ({
+            x: data.timestamps,
+            y: series.values,
+            name: `${series.label} (${series.unit})`,
+            type: 'scatter',
+            mode: 'lines',
+            line: { color: palette[i % palette.length], width: 1.5 },
+            hovertemplate: `%{y:.2f} ${series.unit}<extra>${series.label}</extra>`,
+          }));
+
+          const layout = {
+            height: 420,
+            margin: { t: 16, r: 32, b: 56, l: 60 },
+            paper_bgcolor: 'transparent',
+            plot_bgcolor:  'transparent',
+            font:  { color: '#64748b', size: 11 },
+            xaxis: {
+              type: 'date',
+              color: '#64748b', gridcolor: '#2a2d3a',
+              tickcolor: '#2a2d3a', linecolor: '#2a2d3a',
+              tickfont: { size: 10 },
+            },
+            yaxis: {
+              color: '#64748b', gridcolor: '#2a2d3a',
+              tickcolor: '#2a2d3a', linecolor: '#2a2d3a',
+              tickfont: { size: 10 },
+            },
+            legend: {
+              bgcolor: 'rgba(26,29,39,0.85)', bordercolor: '#2a2d3a', borderwidth: 1,
+              font: { color: '#e2e8f0', size: 11 }, orientation: 'h',
+              y: -0.18, x: 0,
+            },
+            hoverlabel: { bgcolor: '#1a1d27', bordercolor: '#2a2d3a', font: { color: '#e2e8f0', size: 11 } },
+            hovermode: 'x unified',
+            showlegend: true,
+          };
+
+          this.vizHasData = true;
+          this.$nextTick(() => Plotly.react('chart-viz', traces, layout, PLOTLY_CONFIG));
+
+          this.vizInfo = { total_rows: data.total_rows, sampled_rows: data.sampled_rows };
+        } catch (e) {
+          this.vizError = 'Connection error.';
+        } finally {
+          this.vizLoading = false;
+        }
       },
 
       // ── Parameters ──
