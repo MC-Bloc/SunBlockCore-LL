@@ -14,8 +14,7 @@ curl -sL https://cdn.socket.io/4.7.5/socket.io.min.js -o "$VENDOR/socket.io.min.
 echo "→ Alpine.js 3.14.1"
 curl -sL https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js -o "$VENDOR/alpine.min.js"
 
-echo "→ uPlot 1.6.31"
-curl -sL https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js -o "$VENDOR/uplot.min.js"
-curl -sL https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css     -o "$VENDOR/uplot.min.css"
+echo "→ Plotly.js 2.35.3 (basic)"
+curl -sL https://cdn.jsdelivr.net/npm/plotly.js-basic-dist-min@2.35.3/plotly-basic.min.js -o "$VENDOR/plotly.min.js"
 
 echo "✓ All vendor files saved to $VENDOR"

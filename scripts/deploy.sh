@@ -58,7 +58,8 @@ info "Installing Python dependencies..."
     "python-jose[cryptography]" \
     bcrypt \
     slowapi \
-    jinja2
+    jinja2 \
+    openpyxl
 success "Python dependencies installed."
 
 # ── 3. Vendor frontend assets ────────────────────────────────────────────────
@@ -110,6 +111,9 @@ else
     # Secret key
     SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
 
+    # Admin path — random slug, kept out of public-facing links
+    ADMIN_PATH=$(python3 -c "import secrets; print(secrets.token_urlsafe(12))")
+
     # Write .env
     cat > "$ENV_FILE" <<EOF
 CONTROLLER_PORT=$CTRL_PORT
@@ -127,6 +131,7 @@ ADMIN_PASSWORD_HASH=$ADMIN_HASH
 SECRET_KEY=$SECRET_KEY
 TOKEN_EXPIRE_HOURS=24
 SECURE_COOKIES=false
+ADMIN_PATH=$ADMIN_PATH
 EOF
     chmod 600 "$ENV_FILE"
     success ".env written and permissions set to 600."
@@ -184,7 +189,12 @@ echo -e "${GREEN}╔════════════════════
 echo -e "${GREEN}║           Deployment complete!           ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "  Admin panel : ${CYAN}http://$(hostname -I | awk '{print $1}'):$PORT${NC}"
+# Read ADMIN_PATH from the written .env for the final summary
+_ADMIN_PATH=$(grep '^ADMIN_PATH=' "$ENV_FILE" | cut -d= -f2)
+_HOST=$(hostname -I | awk '{print $1}')
+
+echo -e "  Live view   : ${CYAN}http://$_HOST:$PORT${NC}"
+echo -e "  Admin login : ${CYAN}http://$_HOST:$PORT/$_ADMIN_PATH${NC}  ${YELLOW}(keep this private)${NC}"
 echo -e "  Service     : ${CYAN}sudo systemctl status $SERVICE_NAME${NC}"
 echo -e "  Logs        : ${CYAN}journalctl -u $SERVICE_NAME -f${NC}"
 echo -e "  Config      : ${CYAN}$ENV_FILE${NC}"
