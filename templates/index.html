@@ -273,6 +273,28 @@
       <div class="card-title">PV Power (W) — last 5 min</div>
       <div id="chart-pv" class="plotly-chart"></div>
     </div>
+
+    <!-- Extra charts (user-added) -->
+    <template x-for="chart in extraCharts" :key="chart.id">
+      <div class="chart-wrap" style="position:relative">
+        <div class="card-title" x-text="chart.label + ' — last 5 min'"></div>
+        <button @click="removeChart(chart.id)"
+                title="Remove chart"
+                style="position:absolute;top:14px;right:14px;background:transparent;border:none;color:var(--muted);font-size:1rem;cursor:pointer;line-height:1;padding:2px 6px;border-radius:4px"
+                onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--muted)'">✕</button>
+        <div :id="chart.id" class="plotly-chart"></div>
+      </div>
+    </template>
+
+    <!-- Add chart toolbar -->
+    <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+      <select class="hist-select" x-model="addChartKey">
+        <template x-for="[key, cfg] in Object.entries(CHART_VARS)" :key="key">
+          <option :value="key" x-text="cfg.label + ' (' + cfg.unit + ')'"></option>
+        </template>
+      </select>
+      <button class="btn btn-action" @click="addChart()">+ Add Chart</button>
+    </div>
   </div>
 
   <!-- ══ PARAMETERS ══ -->
@@ -737,6 +759,18 @@
   const CHART_MAX = 300; // 5 minutes at 1s
   const CHART_H   = 160;
 
+  // All plottable live fields — used to populate the "Add Chart" dropdown
+  const CHART_VARS = {
+    PVVoltage:          { label: 'PV Voltage',          unit: 'V',   color: '#60a5fa' },
+    PVCurrent:          { label: 'PV Current',          unit: 'A',   color: '#a78bfa' },
+    BattVoltage:        { label: 'Battery Voltage',     unit: 'V',   color: '#34d399' },
+    BattTemperature:    { label: 'Battery Temperature', unit: '°C',  color: '#fb923c' },
+    BattChargePower:    { label: 'Battery Charge Power',unit: 'W',   color: '#4ade80' },
+    LoadPower:          { label: 'Load Power',          unit: 'W',   color: '#f87171' },
+    BattOverallCurrent: { label: 'Battery Current',     unit: 'A',   color: '#c084fc' },
+    CPUPowerDraw:       { label: 'CPU Power Draw',      unit: 'W',   color: '#94a3b8' },
+  };
+
   const PLOTLY_LAYOUT = (yTitle, yRange) => ({
     height: CHART_H,
     margin: { t: 8, r: 16, b: 40, l: 52 },
@@ -789,7 +823,11 @@
 
       // Charts
       chartTimes: [], chartBatt: [], chartPV: [],
+      liveHistory: {},           // rolling buffer for every CHART_VARS field
       chartsReady: false,
+      extraCharts: [],           // user-added charts: [{ id, key, label, unit, color }]
+      addChartKey: 'PVVoltage',  // currently selected variable in the dropdown
+      CHART_VARS,                // expose to template for x-for
 
       // Parameters
       params: null, ctrlStatus: null,
@@ -847,10 +885,17 @@
         this.chartTimes.push(t);
         this.chartBatt.push(d.BattPercentage);
         this.chartPV.push(d.PVPower);
+        // Keep a rolling buffer for every extra-chart-eligible field
+        for (const key of Object.keys(CHART_VARS)) {
+          if (!this.liveHistory[key]) this.liveHistory[key] = [];
+          this.liveHistory[key].push(d[key] ?? null);
+          if (this.liveHistory[key].length > CHART_MAX) this.liveHistory[key].shift();
+        }
         if (this.chartTimes.length > CHART_MAX) {
           this.chartTimes.shift(); this.chartBatt.shift(); this.chartPV.shift();
         }
         this.updateCharts();
+        this.updateExtraCharts(d);
       },
 
       // ── Charts ──
@@ -888,6 +933,55 @@
           Plotly.restyle('chart-batt', keep, [0]);
           Plotly.restyle('chart-pv',   { x: [times.slice(-CHART_MAX)], y: [this.chartPV.slice(-CHART_MAX)] }, [0]);
         }
+      },
+
+      // ── Extra charts ──
+      addChart() {
+        const cfg = CHART_VARS[this.addChartKey];
+        if (!cfg) return;
+        const id = 'chart-extra-' + Date.now();
+        this.extraCharts.push({ id, key: this.addChartKey, ...cfg });
+
+        // Backfill from existing rolling buffer then initialise Plotly
+        const key = this.addChartKey;
+        this.$nextTick(() => {
+          const times  = this.chartTimes.map(t => new Date(t * 1000));
+          const values = times.map((_, i) => {
+            // chartBatt/chartPV are stored separately; others come from live history
+            if (key === 'BattPercentage') return this.chartBatt[i];
+            if (key === 'PVPower')        return this.chartPV[i];
+            return this.liveHistory[key]?.[i] ?? null;
+          });
+          const trace = {
+            x: times, y: values,
+            type: 'scatter', mode: 'lines',
+            line: { color: cfg.color, width: 2 },
+            fill: 'tozeroy', fillcolor: cfg.color + '14',
+            hovertemplate: '%{y:.2f} ' + cfg.unit + '<extra></extra>',
+          };
+          Plotly.newPlot(id, [trace], PLOTLY_LAYOUT(cfg.unit), PLOTLY_CONFIG);
+        });
+      },
+
+      removeChart(id) {
+        Plotly.purge(id);
+        this.extraCharts = this.extraCharts.filter(c => c.id !== id);
+      },
+
+      updateExtraCharts(d) {
+        if (!this.chartsReady || !this.extraCharts.length) return;
+        const t = new Date();
+        this.extraCharts.forEach(chart => {
+          const val = d[chart.key];
+          if (val == null) return;
+          Plotly.extendTraces(chart.id, { x: [[t]], y: [[val]] }, [0]);
+          // Trim to rolling window
+          if (this.chartTimes.length >= CHART_MAX) {
+            const times  = this.chartTimes.map(s => new Date(s * 1000));
+            const values = this.liveHistory[chart.key]?.slice(-CHART_MAX) ?? [];
+            Plotly.restyle(chart.id, { x: [times], y: [values] }, [0]);
+          }
+        });
       },
 
       // ── Auth ──
