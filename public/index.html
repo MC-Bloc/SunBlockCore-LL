@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SunBlock Admin</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #0f1117;
+      --surface: #1a1d27;
+      --border:  #2a2d3a;
+      --text:    #e2e8f0;
+      --muted:   #64748b;
+      --accent:  #f59e0b;
+      --green:   #10b981;
+      --red:     #ef4444;
+      --blue:    #3b82f6;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 13px 24px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 50;
+    }
+    header h1 { font-size: 1.05rem; font-weight: 600; color: var(--accent); }
+    .status { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--muted); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+    .dot.on  { background: var(--green); }
+    .dot.off { background: var(--red); }
+
+    /* ── Tabs ── */
+    .tabs {
+      display: flex;
+      gap: 2px;
+      padding: 0 24px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+    .tab {
+      padding: 10px 18px;
+      font-size: 0.85rem;
+      color: var(--muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+    /* ── Layout ── */
+    .tab-panel { display: none; padding: 24px; max-width: 1000px; margin: 0 auto; }
+    .tab-panel.active { display: block; }
+
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 16px; margin-bottom: 20px; }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px 20px;
+    }
+    .card-title {
+      font-size: 0.7rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--muted); margin-bottom: 14px;
+    }
+    .metric {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 7px 0; font-size: 0.88rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .metric:last-child { border-bottom: none; }
+    .metric-label { color: var(--muted); }
+    .metric-value { font-weight: 500; font-variant-numeric: tabular-nums; }
+
+    /* Battery */
+    .batt-pct { font-size: 2.2rem; font-weight: 700; color: var(--green); line-height: 1; margin-bottom: 10px; }
+    .batt-pct.warn     { color: var(--accent); }
+    .batt-pct.critical { color: var(--red); }
+    .bar-track { background: var(--border); border-radius: 4px; height: 7px; overflow: hidden; margin-bottom: 14px; }
+    .bar-fill  { height: 100%; border-radius: 4px; background: var(--green); transition: width 0.6s ease; }
+    .bar-fill.warn     { background: var(--accent); }
+    .bar-fill.critical { background: var(--red); }
+
+    /* ── Auth bar ── */
+    .auth-bar {
+      display: flex; justify-content: space-between; align-items: center;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 12px 18px; margin-bottom: 20px;
+    }
+    .auth-badge { display: flex; align-items: center; gap: 8px; font-size: 0.82rem; color: var(--muted); }
+    .auth-badge.authed { color: var(--green); }
+
+    /* ── Power Profile ── */
+    .profile-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 18px 20px; margin-bottom: 20px;
+    }
+    .profile-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+    .profile-buttons { display: flex; gap: 10px; flex-wrap: wrap; }
+    .profile-btn {
+      flex: 1; min-width: 110px; padding: 9px 14px;
+      border: 1px solid var(--border); border-radius: 6px;
+      background: var(--bg); color: var(--text); font-size: 0.88rem; cursor: pointer;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    .profile-btn:not(:disabled):hover { border-color: var(--accent); color: var(--accent); }
+    .profile-btn.active { border-color: var(--accent); background: rgba(245,158,11,0.08); color: var(--accent); font-weight: 600; }
+    .profile-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    /* ── Params table ── */
+    .param-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    .param-table th {
+      text-align: left; padding: 7px 10px;
+      font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.06em; color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .param-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+    .param-table tr:last-child td { border-bottom: none; }
+    .param-table td:first-child { color: var(--muted); }
+    .param-table td:last-child  { font-variant-numeric: tabular-nums; font-weight: 500; }
+
+    /* ── Energy grid ── */
+    .energy-period { margin-bottom: 28px; }
+    .energy-period h3 { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 12px; }
+    .energy-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+    .energy-tile {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 16px;
+    }
+    .energy-tile .label { font-size: 0.75rem; color: var(--muted); margin-bottom: 6px; }
+    .energy-tile .value { font-size: 1.5rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .energy-tile .unit  { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
+    .energy-tile.gen .value { color: var(--green); }
+    .energy-tile.con .value { color: var(--accent); }
+
+    /* ── Status badges ── */
+    .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 4px;
+      font-size: 0.75rem; font-weight: 600;
+    }
+    .badge.ok   { background: rgba(16,185,129,0.15); color: var(--green); }
+    .badge.warn { background: rgba(245,158,11,0.15); color: var(--accent); }
+    .badge.err  { background: rgba(239,68,68,0.15);  color: var(--red); }
+
+    /* ── Buttons ── */
+    .btn-link {
+      padding: 5px 12px; border-radius: 5px; font-size: 0.78rem;
+      cursor: pointer; border: 1px solid; background: transparent;
+    }
+    .btn-login  { border-color: var(--accent); color: var(--accent); }
+    .btn-login:hover  { background: rgba(245,158,11,0.1); }
+    .btn-logout { border-color: var(--border); color: var(--muted); }
+    .btn-logout:hover { border-color: var(--red); color: var(--red); }
+    .btn-action {
+      padding: 7px 14px; border: 1px solid var(--border); border-radius: 6px;
+      background: var(--bg); color: var(--text); font-size: 0.85rem; cursor: pointer;
+    }
+    .btn-action:not(:disabled):hover { border-color: var(--accent); color: var(--accent); }
+    .btn-action:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Section header row ── */
+    .section-header {
+      display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;
+    }
+    .section-title { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+
+    /* ── Modals ── */
+    .overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.65); z-index: 200;
+      align-items: flex-start; justify-content: center;
+      padding: 40px 16px; overflow-y: auto;
+    }
+    .overlay.open { display: flex; }
+    .modal {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 28px; width: 100%; max-width: 480px;
+    }
+    .modal h2 { font-size: 1.05rem; font-weight: 600; margin-bottom: 20px; }
+
+    .field { margin-bottom: 12px; }
+    .field label { display: block; font-size: 0.78rem; color: var(--muted); margin-bottom: 4px; }
+    .field input, .field select {
+      width: 100%; padding: 7px 10px;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 0.88rem; outline: none;
+    }
+    .field input:focus, .field select:focus { border-color: var(--accent); }
+    .field-group { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+    .modal-section { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 18px 0 10px; }
+    .form-error { font-size: 0.78rem; color: var(--red); min-height: 16px; margin: 6px 0 2px; }
+    .modal-actions { display: flex; gap: 10px; margin-top: 20px; }
+
+    .btn-primary {
+      flex: 1; padding: 8px; background: var(--accent); border: none;
+      border-radius: 6px; color: #000; font-weight: 700; font-size: 0.88rem; cursor: pointer;
+    }
+    .btn-primary:hover { opacity: 0.88; }
+    .btn-secondary {
+      padding: 8px 14px; background: transparent;
+      border: 1px solid var(--border); border-radius: 6px;
+      color: var(--muted); font-size: 0.88rem; cursor: pointer;
+    }
+    .btn-secondary:hover { border-color: var(--text); color: var(--text); }
+
+    .spinner { display: inline-block; opacity: 0.5; font-size: 0.82rem; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>☀ SunBlock Admin</h1>
+  <div class="status">
+    <div class="dot off" id="dot"></div>
+    <span id="conn-text">Connecting…</span>
+  </div>
+</header>
+
+<nav class="tabs">
+  <div class="tab active" onclick="switchTab('live')">Live</div>
+  <div class="tab" onclick="switchTab('parameters')">Parameters</div>
+  <div class="tab" onclick="switchTab('energy')">Energy</div>
+</nav>
+
+<!-- ══════════ TAB: LIVE ══════════ -->
+<div class="tab-panel active" id="tab-live">
+
+  <div class="auth-bar">
+    <span class="auth-badge" id="auth-badge">🔒 Not logged in</span>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn-link btn-login"  id="btn-show-login" onclick="openLogin()">Login</button>
+      <button class="btn-link btn-logout" id="btn-logout" style="display:none" onclick="logout()">Logout</button>
+    </div>
+  </div>
+
+  <div class="profile-card">
+    <div class="profile-header">
+      <span class="card-title" style="margin:0">Power Profile</span>
+    </div>
+    <div class="profile-buttons">
+      <button class="profile-btn" id="btn-performance" onclick="setProfile('performance')" disabled>Performance</button>
+      <button class="profile-btn" id="btn-balanced"    onclick="setProfile('balanced')"    disabled>Balanced</button>
+      <button class="profile-btn" id="btn-power-saver" onclick="setProfile('power-saver')" disabled>Power Saver</button>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="card-title">Battery</div>
+      <div class="batt-pct" id="batt-pct">–%</div>
+      <div class="bar-track"><div class="bar-fill" id="batt-bar" style="width:0%"></div></div>
+      <div class="metric"><span class="metric-label">Voltage</span>       <span class="metric-value" id="batt-v">– V</span></div>
+      <div class="metric"><span class="metric-label">Temperature</span>   <span class="metric-value" id="batt-t">– °C</span></div>
+      <div class="metric"><span class="metric-label">Charge Power</span>  <span class="metric-value" id="batt-cp">– W</span></div>
+      <div class="metric"><span class="metric-label">Current</span>       <span class="metric-value" id="batt-i">– A</span></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Solar Panel</div>
+      <div class="metric"><span class="metric-label">Voltage</span>    <span class="metric-value" id="pv-v">– V</span></div>
+      <div class="metric"><span class="metric-label">Current</span>    <span class="metric-value" id="pv-i">– A</span></div>
+      <div class="metric"><span class="metric-label">Power</span>      <span class="metric-value" id="pv-p">– W</span></div>
+      <div class="metric"><span class="metric-label">Load Power</span> <span class="metric-value" id="load-p">– W</span></div>
+    </div>
+    <div class="card">
+      <div class="card-title">System</div>
+      <div class="metric"><span class="metric-label">CPU Power Draw</span>  <span class="metric-value" id="cpu-p">– W</span></div>
+      <div class="metric"><span class="metric-label">Connected Users</span> <span class="metric-value" id="users">–</span></div>
+      <div class="metric"><span class="metric-label">Last Update</span>     <span class="metric-value" id="ts">–</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ TAB: PARAMETERS ══════════ -->
+<div class="tab-panel" id="tab-parameters">
+
+  <div class="section-header" style="margin-bottom:20px">
+    <span></span>
+    <div style="display:flex;gap:8px">
+      <button class="btn-action" id="btn-sync-rtc" onclick="syncRtc()" disabled>Sync RTC to Server Time</button>
+      <button class="btn-action" id="btn-edit-params" onclick="openEditParams()" disabled>Edit Parameters</button>
+      <button class="btn-action" onclick="loadParams()">↻ Refresh</button>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="card-title">Battery Configuration</div>
+      <div class="metric"><span class="metric-label">Type</span>              <span class="metric-value" id="p-batt-type">–</span></div>
+      <div class="metric"><span class="metric-label">Capacity</span>          <span class="metric-value" id="p-batt-cap">–</span></div>
+      <div class="metric"><span class="metric-label">Rated Voltage</span>     <span class="metric-value" id="p-batt-rated-v">–</span></div>
+      <div class="metric"><span class="metric-label">Charging Mode</span>     <span class="metric-value" id="p-charge-mode">–</span></div>
+      <div class="metric"><span class="metric-label">Temp Compensation</span> <span class="metric-value" id="p-temp-comp">–</span></div>
+      <div class="metric"><span class="metric-label">Default Load</span>      <span class="metric-value" id="p-default-load">–</span></div>
+      <div class="metric"><span class="metric-label">Equalize Duration</span> <span class="metric-value" id="p-eq-dur">–</span></div>
+      <div class="metric"><span class="metric-label">Boost Duration</span>    <span class="metric-value" id="p-boost-dur">–</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Controller Status</div>
+      <div class="metric"><span class="metric-label">Controller Temp</span>      <span class="metric-value" id="s-ctrl-temp">–</span></div>
+      <div class="metric"><span class="metric-label">Remote Batt Temp</span>     <span class="metric-value" id="s-remote-temp">–</span></div>
+      <div class="metric"><span class="metric-label">Load Voltage</span>         <span class="metric-value" id="s-load-v">–</span></div>
+      <div class="metric"><span class="metric-label">Load Current</span>         <span class="metric-value" id="s-load-i">–</span></div>
+      <div class="metric"><span class="metric-label">Rated Charge Current</span> <span class="metric-value" id="s-rated-i">–</span></div>
+      <div class="metric"><span class="metric-label">Day / Night</span>          <span class="metric-value" id="s-day">–</span></div>
+      <div class="metric"><span class="metric-label">RTC</span>                  <span class="metric-value" id="s-rtc">–</span></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:20px">
+    <div class="card-title">Voltage Thresholds</div>
+    <table class="param-table">
+      <thead><tr><th>Register</th><th>Value</th></tr></thead>
+      <tbody id="voltage-table-body">
+        <tr><td colspan="2" style="color:var(--muted);padding:12px 10px">Click Refresh to load</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Equipment Status</div>
+    <div id="equipment-status" style="color:var(--muted);font-size:0.85rem;padding:4px 0">Click Refresh to load</div>
+  </div>
+</div>
+
+<!-- ══════════ TAB: ENERGY ══════════ -->
+<div class="tab-panel" id="tab-energy">
+
+  <div style="display:flex;justify-content:flex-end;margin-bottom:20px">
+    <button class="btn-action" onclick="loadStats()">↻ Refresh</button>
+  </div>
+
+  <div class="energy-period">
+    <h3>Today</h3>
+    <div class="energy-grid">
+      <div class="energy-tile gen"><div class="label">Generated</div><div class="value" id="e-gen-today">–</div><div class="unit">kWh</div></div>
+      <div class="energy-tile con"><div class="label">Consumed</div><div class="value" id="e-con-today">–</div><div class="unit">kWh</div></div>
+      <div class="energy-tile">    <div class="label">PV Max Voltage</div><div class="value" id="e-pv-max">–</div><div class="unit">V</div></div>
+      <div class="energy-tile">    <div class="label">PV Min Voltage</div><div class="value" id="e-pv-min">–</div><div class="unit">V</div></div>
+      <div class="energy-tile">    <div class="label">Batt Max Voltage</div><div class="value" id="e-batt-max">–</div><div class="unit">V</div></div>
+      <div class="energy-tile">    <div class="label">Batt Min Voltage</div><div class="value" id="e-batt-min">–</div><div class="unit">V</div></div>
+    </div>
+  </div>
+
+  <div class="energy-period">
+    <h3>This Month</h3>
+    <div class="energy-grid">
+      <div class="energy-tile gen"><div class="label">Generated</div><div class="value" id="e-gen-month">–</div><div class="unit">kWh</div></div>
+      <div class="energy-tile con"><div class="label">Consumed</div><div class="value" id="e-con-month">–</div><div class="unit">kWh</div></div>
+    </div>
+  </div>
+
+  <div class="energy-period">
+    <h3>This Year</h3>
+    <div class="energy-grid">
+      <div class="energy-tile gen"><div class="label">Generated</div><div class="value" id="e-gen-year">–</div><div class="unit">kWh</div></div>
+      <div class="energy-tile con"><div class="label">Consumed</div><div class="value" id="e-con-year">–</div><div class="unit">kWh</div></div>
+    </div>
+  </div>
+
+  <div class="energy-period">
+    <h3>All Time</h3>
+    <div class="energy-grid">
+      <div class="energy-tile gen"><div class="label">Total Generated</div><div class="value" id="e-gen-total">–</div><div class="unit">kWh</div></div>
+      <div class="energy-tile con"><div class="label">Total Consumed</div><div class="value" id="e-con-total">–</div><div class="unit">kWh</div></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ══════════ LOGIN MODAL ══════════ -->
+<div class="overlay" id="login-overlay">
+  <div class="modal">
+    <h2>Admin Login</h2>
+    <div class="field">
+      <label>Username</label>
+      <input id="inp-user" type="text" autocomplete="username" />
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input id="inp-pass" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()" />
+    </div>
+    <div class="form-error" id="login-err"></div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeLogin()">Cancel</button>
+      <button class="btn-primary"   onclick="doLogin()">Login</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ EDIT PARAMS MODAL ══════════ -->
+<div class="overlay" id="params-overlay">
+  <div class="modal">
+    <h2>Edit Controller Parameters</h2>
+
+    <div class="modal-section">Battery</div>
+    <div class="field-group">
+      <div class="field">
+        <label>Capacity (Ah)</label>
+        <input id="ep-capacity" type="number" min="1" step="1" />
+      </div>
+      <div class="field">
+        <label>Temp Compensation (mV/°C/2V)</label>
+        <input id="ep-temp-comp" type="number" step="0.01" />
+      </div>
+    </div>
+
+    <div class="modal-section">Voltage Thresholds (V)</div>
+    <div class="field-group">
+      <div class="field"><label>Over Voltage Disconnect</label>    <input id="vc-over_voltage_disconnect_voltage"    type="number" step="0.01" /></div>
+      <div class="field"><label>Charging Limit</label>             <input id="vc-charging_limit_voltage"             type="number" step="0.01" /></div>
+      <div class="field"><label>Over Voltage Reconnect</label>     <input id="vc-over_voltage_reconnect_voltage"     type="number" step="0.01" /></div>
+      <div class="field"><label>Equalize Charging</label>          <input id="vc-equalize_charging_voltage"          type="number" step="0.01" /></div>
+      <div class="field"><label>Boost Charging</label>             <input id="vc-boost_charging_voltage"             type="number" step="0.01" /></div>
+      <div class="field"><label>Float Charging</label>             <input id="vc-float_charging_voltage"             type="number" step="0.01" /></div>
+      <div class="field"><label>Boost Reconnect</label>            <input id="vc-boost_reconnect_charging_voltage"   type="number" step="0.01" /></div>
+      <div class="field"><label>Low Voltage Reconnect</label>      <input id="vc-low_voltage_reconnect_voltage"      type="number" step="0.01" /></div>
+      <div class="field"><label>Under Voltage Recover</label>      <input id="vc-under_voltage_recover_voltage"      type="number" step="0.01" /></div>
+      <div class="field"><label>Under Voltage Warning</label>      <input id="vc-under_voltage_warning_voltage"      type="number" step="0.01" /></div>
+      <div class="field"><label>Low Voltage Disconnect</label>     <input id="vc-low_voltage_disconnect_voltage"     type="number" step="0.01" /></div>
+      <div class="field"><label>Discharging Limit</label>          <input id="vc-discharging_limit_voltage"          type="number" step="0.01" /></div>
+    </div>
+
+    <div class="form-error" id="params-err"></div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeEditParams()">Cancel</button>
+      <button class="btn-primary"   onclick="submitParams()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script>
+
+  // ── Tabs ──
+  function switchTab(name) {
+    document.querySelectorAll('.tab').forEach((t, i) => {
+      const names = ['live', 'parameters', 'energy'];
+      t.classList.toggle('active', names[i] === name);
+    });
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    if (name === 'parameters') loadParams();
+    if (name === 'energy')     loadStats();
+  }
+
+  // ── Socket ──
+  const socket = io();
+  let currentProfile = '';
+
+  socket.on('connect',    () => setConn(true));
+  socket.on('disconnect', () => setConn(false));
+
+  function setConn(on) {
+    document.getElementById('dot').className = 'dot ' + (on ? 'on' : 'off');
+    document.getElementById('conn-text').textContent = on ? 'Connected' : 'Disconnected';
+  }
+
+  socket.on('solar_data', d => {
+    const pct   = d.BattPercentage;
+    const level = pct < 20 ? 'critical' : pct < 40 ? 'warn' : '';
+    document.getElementById('batt-pct').className   = 'batt-pct' + (level ? ' ' + level : '');
+    document.getElementById('batt-bar').className   = 'bar-fill'  + (level ? ' ' + level : '');
+    document.getElementById('batt-pct').textContent = pct + '%';
+    document.getElementById('batt-bar').style.width = pct + '%';
+    document.getElementById('batt-v').textContent   = d.BattVoltage.toFixed(2)       + ' V';
+    document.getElementById('batt-t').textContent   = d.BattTemperature.toFixed(1)   + ' °C';
+    document.getElementById('batt-cp').textContent  = d.BattChargePower.toFixed(1)   + ' W';
+    document.getElementById('batt-i').textContent   = d.BattOverallCurrent.toFixed(2)+ ' A';
+    document.getElementById('pv-v').textContent     = d.PVVoltage.toFixed(2)  + ' V';
+    document.getElementById('pv-i').textContent     = d.PVCurrent.toFixed(2)  + ' A';
+    document.getElementById('pv-p').textContent     = d.PVPower.toFixed(1)    + ' W';
+    document.getElementById('load-p').textContent   = d.LoadPower.toFixed(1)  + ' W';
+    document.getElementById('cpu-p').textContent    = d.CPUPowerDraw + ' W';
+    document.getElementById('users').textContent    = d.ConnectedUsers;
+    document.getElementById('ts').textContent       = d.Timestamp;
+    if (d.PowerProfile !== currentProfile) {
+      currentProfile = d.PowerProfile;
+      refreshProfileButtons();
+    }
+  });
+
+  // ── Auth ──
+  const TOKEN_KEY = 'sb_token';
+  function getToken()      { return localStorage.getItem(TOKEN_KEY); }
+  function storeToken(tok) { localStorage.setItem(TOKEN_KEY, tok); refreshAuthUI(); }
+  function logout()        { localStorage.removeItem(TOKEN_KEY); refreshAuthUI(); }
+
+  function refreshAuthUI() {
+    const authed = !!getToken();
+    document.getElementById('auth-badge').textContent = authed ? '🔓 Logged in' : '🔒 Not logged in';
+    document.getElementById('auth-badge').className   = 'auth-badge' + (authed ? ' authed' : '');
+    document.getElementById('btn-show-login').style.display = authed ? 'none' : '';
+    document.getElementById('btn-logout').style.display     = authed ? '' : 'none';
+    document.querySelectorAll('.profile-btn').forEach(b => b.disabled = !authed);
+    document.getElementById('btn-edit-params').disabled = !authed;
+    document.getElementById('btn-sync-rtc').disabled    = !authed;
+    refreshProfileButtons();
+  }
+
+  function refreshProfileButtons() {
+    ['performance', 'balanced', 'power-saver'].forEach(p =>
+      document.getElementById('btn-' + p).classList.toggle('active', currentProfile === p)
+    );
+  }
+
+  // ── Login modal ──
+  function openLogin() {
+    document.getElementById('login-err').textContent = '';
+    document.getElementById('inp-user').value = '';
+    document.getElementById('inp-pass').value = '';
+    document.getElementById('login-overlay').classList.add('open');
+    setTimeout(() => document.getElementById('inp-user').focus(), 50);
+  }
+  function closeLogin() { document.getElementById('login-overlay').classList.remove('open'); }
+
+  document.getElementById('login-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeLogin(); });
+
+  async function doLogin() {
+    const username = document.getElementById('inp-user').value.trim();
+    const password = document.getElementById('inp-pass').value;
+    document.getElementById('login-err').textContent = '';
+    if (!username || !password) { document.getElementById('login-err').textContent = 'Enter username and password.'; return; }
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      if (res.ok) { storeToken((await res.json()).token); closeLogin(); }
+      else document.getElementById('login-err').textContent = 'Invalid username or password.';
+    } catch { document.getElementById('login-err').textContent = 'Connection error. Try again.'; }
+  }
+
+  // ── Power profile ──
+  const PROFILE_ROUTES = {
+    'performance': '/api/performance-mode',
+    'balanced':    '/api/balanced',
+    'power-saver': '/api/power-saver-mode',
+  };
+
+  async function setProfile(profile) {
+    const token = getToken();
+    if (!token) { openLogin(); return; }
+    const res = await fetch(PROFILE_ROUTES[profile], {
+      method: 'POST', headers: { 'Authorization': 'Bearer ' + token },
+    });
+    if (res.status === 401) { logout(); openLogin(); }
+  }
+
+  // ── Helper: authenticated fetch ──
+  async function authFetch(url, options = {}) {
+    const token = getToken();
+    if (!token) { openLogin(); throw new Error('not authenticated'); }
+    const res = await fetch(url, {
+      ...options,
+      headers: { ...(options.headers || {}), 'Authorization': 'Bearer ' + token },
+    });
+    if (res.status === 401) { logout(); openLogin(); throw new Error('session expired'); }
+    return res;
+  }
+
+  // ── Parameters tab ──
+  let cachedParams = null;
+
+  async function loadParams() {
+    try {
+      const [paramsRes, statusRes] = await Promise.all([
+        fetch('/api/controller/parameters'),
+        fetch('/api/controller/status'),
+      ]);
+      const params = await paramsRes.json();
+      const status = await statusRes.json();
+      cachedParams = params;
+      renderParams(params);
+      renderStatus(status);
+    } catch (e) {
+      console.error('Failed to load parameters:', e);
+    }
+  }
+
+  function renderParams(p) {
+    document.getElementById('p-batt-type').textContent     = p.battery_type      ?? '–';
+    document.getElementById('p-batt-cap').textContent      = p.battery_capacity != null ? p.battery_capacity + ' Ah' : '–';
+    document.getElementById('p-batt-rated-v').textContent  = p.battery_rated_voltage ?? '–';
+    document.getElementById('p-charge-mode').textContent   = p.charging_mode     ?? '–';
+    document.getElementById('p-temp-comp').textContent     = p.temperature_compensation_coefficient != null ? p.temperature_compensation_coefficient + ' mV/°C/2V' : '–';
+    document.getElementById('p-default-load').textContent  = p.default_load_on_off ?? '–';
+    document.getElementById('p-eq-dur').textContent        = p.equalize_duration != null ? p.equalize_duration + ' min' : '–';
+    document.getElementById('p-boost-dur').textContent     = p.boost_duration    != null ? p.boost_duration    + ' min' : '–';
+
+    const vc = p.voltage_controls || {};
+    const labels = {
+      over_voltage_disconnect_voltage:   'Over Voltage Disconnect',
+      charging_limit_voltage:            'Charging Limit',
+      over_voltage_reconnect_voltage:    'Over Voltage Reconnect',
+      equalize_charging_voltage:         'Equalize Charging',
+      boost_charging_voltage:            'Boost Charging',
+      float_charging_voltage:            'Float Charging',
+      boost_reconnect_charging_voltage:  'Boost Reconnect',
+      low_voltage_reconnect_voltage:     'Low Voltage Reconnect',
+      under_voltage_recover_voltage:     'Under Voltage Recover',
+      under_voltage_warning_voltage:     'Under Voltage Warning',
+      low_voltage_disconnect_voltage:    'Low Voltage Disconnect',
+      discharging_limit_voltage:         'Discharging Limit',
+    };
+    const tbody = document.getElementById('voltage-table-body');
+    tbody.innerHTML = Object.entries(labels).map(([key, label]) =>
+      `<tr><td>${label}</td><td>${vc[key] != null ? vc[key].toFixed(2) + ' V' : '–'}</td></tr>`
+    ).join('');
+  }
+
+  function renderStatus(s) {
+    document.getElementById('s-ctrl-temp').textContent   = s.controller_temperature    != null ? s.controller_temperature.toFixed(1)    + ' °C' : '–';
+    document.getElementById('s-remote-temp').textContent = s.remote_battery_temperature!= null ? s.remote_battery_temperature.toFixed(1) + ' °C' : '–';
+    document.getElementById('s-load-v').textContent      = s.load_voltage != null ? s.load_voltage.toFixed(2) + ' V' : '–';
+    document.getElementById('s-load-i').textContent      = s.load_current != null ? s.load_current.toFixed(2) + ' A' : '–';
+    document.getElementById('s-rated-i').textContent     = s.rated_charging_current != null ? s.rated_charging_current + ' A' : '–';
+    document.getElementById('s-day').textContent         = s.is_day != null ? (s.is_day ? '☀ Day' : '🌙 Night') : '–';
+    document.getElementById('s-rtc').textContent         = s.rtc ?? '–';
+
+    const cs  = s.charging_status    || {};
+    const ds  = s.discharging_status || {};
+    const bs  = s.battery_status     || {};
+    const eq  = document.getElementById('equipment-status');
+    eq.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;font-size:0.85rem">
+        <div>
+          <div style="color:var(--muted);font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Charging</div>
+          ${renderDict(cs)}
+        </div>
+        <div>
+          <div style="color:var(--muted);font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Discharging</div>
+          ${renderDict(ds)}
+        </div>
+        <div>
+          <div style="color:var(--muted);font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Battery</div>
+          ${renderDict(bs)}
+        </div>
+      </div>`;
+  }
+
+  function renderDict(obj) {
+    return Object.entries(obj).map(([k, v]) => {
+      const label = k.replace(/_/g, ' ');
+      const val   = typeof v === 'boolean'
+        ? (v ? '<span class="badge err">Yes</span>' : '<span class="badge ok">No</span>')
+        : String(v);
+      return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)">
+                <span style="color:var(--muted)">${label}</span><span>${val}</span>
+              </div>`;
+    }).join('');
+  }
+
+  // ── Edit params modal ──
+  function openEditParams() {
+    document.getElementById('params-err').textContent = '';
+    if (cachedParams) populateEditForm(cachedParams);
+    document.getElementById('params-overlay').classList.add('open');
+  }
+  function closeEditParams() { document.getElementById('params-overlay').classList.remove('open'); }
+
+  document.getElementById('params-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeEditParams(); });
+
+  function populateEditForm(p) {
+    document.getElementById('ep-capacity').value  = p.battery_capacity ?? '';
+    document.getElementById('ep-temp-comp').value = p.temperature_compensation_coefficient ?? '';
+    const vc = p.voltage_controls || {};
+    Object.keys(vc).forEach(key => {
+      const el = document.getElementById('vc-' + key);
+      if (el) el.value = vc[key] ?? '';
+    });
+  }
+
+  async function submitParams() {
+    document.getElementById('params-err').textContent = '';
+
+    const voltage_controls = {};
+    ['over_voltage_disconnect_voltage','charging_limit_voltage','over_voltage_reconnect_voltage',
+     'equalize_charging_voltage','boost_charging_voltage','float_charging_voltage',
+     'boost_reconnect_charging_voltage','low_voltage_reconnect_voltage','under_voltage_recover_voltage',
+     'under_voltage_warning_voltage','low_voltage_disconnect_voltage','discharging_limit_voltage'
+    ].forEach(key => {
+      const el = document.getElementById('vc-' + key);
+      if (el && el.value !== '') voltage_controls[key] = parseFloat(el.value);
+    });
+
+    const body = {
+      battery_capacity:                    document.getElementById('ep-capacity').value  !== '' ? parseInt(document.getElementById('ep-capacity').value)   : null,
+      temperature_compensation_coefficient: document.getElementById('ep-temp-comp').value !== '' ? parseFloat(document.getElementById('ep-temp-comp').value) : null,
+      voltage_controls: Object.keys(voltage_controls).length ? voltage_controls : null,
+    };
+
+    try {
+      const res = await authFetch('/api/controller/parameters', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        cachedParams = await res.json();
+        renderParams(cachedParams);
+        closeEditParams();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        document.getElementById('params-err').textContent = err.detail || 'Failed to save.';
+      }
+    } catch (e) {
+      if (e.message !== 'not authenticated' && e.message !== 'session expired')
+        document.getElementById('params-err').textContent = 'Connection error.';
+    }
+  }
+
+  // ── RTC sync ──
+  async function syncRtc() {
+    try {
+      const res = await authFetch('/api/controller/rtc/sync', { method: 'POST' });
+      if (res.ok) loadParams();
+    } catch {}
+  }
+
+  // ── Energy tab ──
+  async function loadStats() {
+    try {
+      const res  = await fetch('/api/controller/stats');
+      const data = await res.json();
+      document.getElementById('e-gen-today').textContent  = fmt(data.generated_today);
+      document.getElementById('e-con-today').textContent  = fmt(data.consumed_today);
+      document.getElementById('e-pv-max').textContent     = fmt(data.pv_voltage_max_today);
+      document.getElementById('e-pv-min').textContent     = fmt(data.pv_voltage_min_today);
+      document.getElementById('e-batt-max').textContent   = fmt(data.batt_voltage_max_today);
+      document.getElementById('e-batt-min').textContent   = fmt(data.batt_voltage_min_today);
+      document.getElementById('e-gen-month').textContent  = fmt(data.generated_this_month);
+      document.getElementById('e-con-month').textContent  = fmt(data.consumed_this_month);
+      document.getElementById('e-gen-year').textContent   = fmt(data.generated_this_year);
+      document.getElementById('e-con-year').textContent   = fmt(data.consumed_this_year);
+      document.getElementById('e-gen-total').textContent  = fmt(data.total_generated);
+      document.getElementById('e-con-total').textContent  = fmt(data.total_consumed);
+    } catch (e) { console.error('Failed to load stats:', e); }
+  }
+
+  function fmt(v) { return v != null ? Number(v).toFixed(2) : '–'; }
+
+  // Init
+  refreshAuthUI();
+</script>
+</body>
+</html>

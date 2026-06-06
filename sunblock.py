@@ -13,12 +13,13 @@ Setup notes:
    To find yours, connect the RS485 cable and run `sudo dmesg` in the terminal.
 3. All data is stored in ~/SunblockData (absolute: /home/{YOUR_USER_NAME}/SunblockData).
 4. The server's user account was granted passwordless sudo — see sudo visudo.
+5. Set ADMIN_USERNAME, ADMIN_PASSWORD, and SECRET_KEY in your .env before deploying.
 
 Run with:
     uvicorn sunblock:socket_app --host 0.0.0.0 --port ${PORT:-3000}
 
 Install dependencies:
-    pip install fastapi uvicorn python-socketio epevermodbus python-dotenv
+    pip install fastapi uvicorn python-socketio epevermodbus python-dotenv python-jose[cryptography]
 
 Requires Python 3.9+ (uses asyncio.to_thread).
 '''
@@ -28,13 +29,17 @@ import os
 import sqlite3
 import subprocess
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+from typing import Optional
 
 from dotenv import load_dotenv
+from jose import JWTError, jwt
+from pydantic import BaseModel
 import socketio
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from epevermodbus.driver import EpeverChargeController
 
 load_dotenv()
@@ -52,6 +57,11 @@ DATA_MAN = os.getenv("DATA_MAN", "true").lower() == "true"
 DB_NAME = os.path.join(DATA_DIRECTORY, "SunBlockCore-LL.db")
 DB_TABLE_NAME = "solardata"
 READ_INTERVAL = int(os.getenv("READ_INTERVAL", 1))  # seconds
+
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "changeme")
+SECRET_KEY = os.getenv("SECRET_KEY", "changeme-secret-key")
+TOKEN_EXPIRE_HOURS = int(os.getenv("TOKEN_EXPIRE_HOURS", 24))
 
 
 # --- State ---
@@ -79,6 +89,38 @@ SOLAR_DATA = {
     "CPUPowerDraw": 0,
     "PowerProfile": "",
 }
+
+
+# --- Auth ---
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class ControllerParamsUpdate(BaseModel):
+    battery_capacity: Optional[int] = None
+    temperature_compensation_coefficient: Optional[float] = None
+    voltage_controls: Optional[dict] = None
+
+_security = HTTPBearer()
+
+def _create_token(username: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(hours=TOKEN_EXPIRE_HOURS)
+    return jwt.encode({"sub": username, "exp": expire}, SECRET_KEY, algorithm="HS256")
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(_security)) -> str:
+    try:
+        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=["HS256"])
+        username: str = payload.get("sub")
+        if username != ADMIN_USERNAME:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return username
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+def require_controller():
+    if CONTROLLER is None:
+        raise HTTPException(status_code=503, detail="Controller not connected")
 
 
 # --- Logging ---
@@ -150,6 +192,64 @@ def parse_data():
     data["CPUPowerDraw"] = result.stdout.decode().replace("W", "").strip()
     data["PowerProfile"] = check_power_profile()
     return data
+
+
+# --- Controller parameter read/write ---
+
+def read_controller_params():
+    return {
+        "battery_type":                          str(CONTROLLER.get_battery_type()),
+        "battery_capacity":                      CONTROLLER.get_battery_capacity(),
+        "battery_rated_voltage":                 str(CONTROLLER.get_battery_rated_voltage()),
+        "charging_mode":                         str(CONTROLLER.get_charging_mode()),
+        "temperature_compensation_coefficient":  CONTROLLER.get_temperature_compensation_coefficient(),
+        "default_load_on_off":                   str(CONTROLLER.get_default_load_on_off_in_manual_mode()),
+        "equalize_duration":                     CONTROLLER.get_equalize_duration(),
+        "boost_duration":                        CONTROLLER.get_boost_duration(),
+        "voltage_controls":                      CONTROLLER.get_battery_voltage_control_registers(),
+    }
+
+
+def read_controller_stats():
+    return {
+        "pv_voltage_max_today":      CONTROLLER.get_maximum_pv_voltage_today(),
+        "pv_voltage_min_today":      CONTROLLER.get_minimum_pv_voltage_today(),
+        "batt_voltage_max_today":    CONTROLLER.get_maximum_battery_voltage_today(),
+        "batt_voltage_min_today":    CONTROLLER.get_minimum_battery_voltage_today(),
+        "generated_today":           CONTROLLER.get_generated_energy_today(),
+        "generated_this_month":      CONTROLLER.get_generated_energy_this_month(),
+        "generated_this_year":       CONTROLLER.get_generated_energy_this_year(),
+        "total_generated":           CONTROLLER.get_total_generated_energy(),
+        "consumed_today":            CONTROLLER.get_consumed_energy_today(),
+        "consumed_this_month":       CONTROLLER.get_consumed_energy_this_month(),
+        "consumed_this_year":        CONTROLLER.get_consumed_energy_this_year(),
+        "total_consumed":            CONTROLLER.get_total_consumed_energy(),
+    }
+
+
+def read_controller_status():
+    return {
+        "battery_status":            CONTROLLER.get_battery_status(),
+        "charging_status":           CONTROLLER.get_charging_equipment_status(),
+        "discharging_status":        CONTROLLER.get_discharging_equipment_status(),
+        "is_day":                    CONTROLLER.is_day(),
+        "controller_temperature":    CONTROLLER.get_controller_temperature(),
+        "remote_battery_temperature": CONTROLLER.get_remote_battery_temperature(),
+        "load_voltage":              CONTROLLER.get_load_voltage(),
+        "load_current":              CONTROLLER.get_load_current(),
+        "rtc":                       str(CONTROLLER.get_rtc()),
+        "rated_charging_current":    CONTROLLER.get_rated_charging_current(),
+        "rated_load_current":        CONTROLLER.get_rated_load_current(),
+    }
+
+
+def apply_controller_params(update: dict):
+    if update.get("battery_capacity") is not None:
+        CONTROLLER.set_battery_capacity(update["battery_capacity"])
+    if update.get("temperature_compensation_coefficient") is not None:
+        CONTROLLER.set_temperature_compensation_coefficient(update["temperature_compensation_coefficient"])
+    if update.get("voltage_controls") is not None:
+        CONTROLLER.set_battery_voltage_control_registers_dict(update["voltage_controls"])
 
 
 async def polling_loop():
@@ -225,7 +325,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["GET", "PUT", "POST", "DELETE"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 socket_app = socketio.ASGIApp(sio, app)
@@ -238,32 +338,85 @@ async def get_data():
     return JSONResponse(content=SOLAR_DATA, status_code=200)
 
 
+@app.post("/api/login")
+async def login(body: LoginRequest):
+    if body.username == ADMIN_USERNAME and body.password == ADMIN_PASSWORD:
+        return {"token": _create_token(body.username)}
+    raise HTTPException(status_code=401, detail="Invalid credentials")
+
+
+# Power profile
+
 @app.get("/api/power-profile")
-async def get_power_profile():
+async def get_power_profile(_=Depends(require_controller)):
     loop = asyncio.get_running_loop()
     output = await loop.run_in_executor(None, check_power_profile)
     return JSONResponse(content={"body": "Current Profile: " + output}, status_code=200)
 
 
 @app.post("/api/performance-mode")
-async def set_performance():
+async def set_performance(user: str = Depends(verify_token), _=Depends(require_controller)):
     loop = asyncio.get_running_loop()
     output = await loop.run_in_executor(None, set_power_profile, "performance")
     return JSONResponse(content={"response": "Profile changed successfully to " + output}, status_code=200)
 
 
 @app.post("/api/power-saver-mode")
-async def set_power_saver():
+async def set_power_saver(user: str = Depends(verify_token), _=Depends(require_controller)):
     loop = asyncio.get_running_loop()
     output = await loop.run_in_executor(None, set_power_profile, "power-saver")
     return JSONResponse(content={"response": "Profile changed successfully to " + output}, status_code=200)
 
 
 @app.post("/api/balanced")
-async def set_balanced():
+async def set_balanced(user: str = Depends(verify_token), _=Depends(require_controller)):
     loop = asyncio.get_running_loop()
     output = await loop.run_in_executor(None, set_power_profile, "balanced")
     return JSONResponse(content={"response": "Profile changed successfully to " + output}, status_code=200)
+
+
+# Controller parameters
+
+@app.get("/api/controller/parameters")
+async def get_controller_params(_=Depends(require_controller)):
+    loop = asyncio.get_running_loop()
+    data = await loop.run_in_executor(None, read_controller_params)
+    return JSONResponse(content=data, status_code=200)
+
+
+@app.put("/api/controller/parameters")
+async def update_controller_params(
+    body: ControllerParamsUpdate,
+    user: str = Depends(verify_token),
+    _=Depends(require_controller),
+):
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, apply_controller_params, body.model_dump())
+    data = await loop.run_in_executor(None, read_controller_params)
+    return JSONResponse(content=data, status_code=200)
+
+
+@app.get("/api/controller/stats")
+async def get_controller_stats(_=Depends(require_controller)):
+    loop = asyncio.get_running_loop()
+    data = await loop.run_in_executor(None, read_controller_stats)
+    return JSONResponse(content=data, status_code=200)
+
+
+@app.get("/api/controller/status")
+async def get_controller_status(_=Depends(require_controller)):
+    loop = asyncio.get_running_loop()
+    data = await loop.run_in_executor(None, read_controller_status)
+    return JSONResponse(content=data, status_code=200)
+
+
+@app.post("/api/controller/rtc/sync")
+async def sync_rtc(user: str = Depends(verify_token), _=Depends(require_controller)):
+    def do_sync():
+        CONTROLLER.set_rtc(datetime.now())
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, do_sync)
+    return JSONResponse(content={"message": "RTC synced to server time"}, status_code=200)
 
 
 if os.path.isdir(STATIC_DIR):
