@@ -55,7 +55,11 @@ from auth import (
     check_session, create_token, verify_session,
     require_controller, require_real_controller,
 )
-from db import apply_data_directory, check_db, delete_setting, load_settings, query_history, query_visualize, save_setting, sunblock_log, write_db
+from db import (
+    admin_log, apply_data_directory, check_db, delete_setting,
+    load_settings, query_history, query_visualize,
+    save_setting, sunblock_log, write_db,
+)
 from db import VIZ_FIELD_META
 from hardware import (
     apply_controller_params, check_power_profile,
@@ -281,10 +285,12 @@ async def get_mode():
 @app.post("/api/login")
 @limiter.limit("5/minute")
 async def login(request: Request, body: LoginRequest, response: Response):
+    ip = _client_ip(request)
     if not config.ADMIN_PASSWORD_HASH:
         raise HTTPException(status_code=503, detail="Admin password not configured on server.")
     if body.username != config.ADMIN_USERNAME or \
        not _bcrypt.checkpw(body.password.encode(), config.ADMIN_PASSWORD_HASH.encode()):
+        await admin_log("LOGIN_FAILED", f"user={body.username}", ip=ip)
         raise HTTPException(status_code=401, detail="Invalid credentials")
     response.set_cookie(
         key="sb_session",
@@ -294,10 +300,12 @@ async def login(request: Request, body: LoginRequest, response: Response):
         samesite="strict",
         max_age=config.TOKEN_EXPIRE_HOURS * 3600,
     )
+    await admin_log("LOGIN", f"user={body.username}", ip=ip)
     return {"message": "Logged in"}
 
 @app.post("/api/logout")
-async def logout(response: Response):
+async def logout(request: Request, response: Response):
+    await admin_log("LOGOUT", ip=_client_ip(request))
     response.delete_cookie("sb_session", samesite="strict")
     return {"message": "Logged out"}
 
@@ -314,7 +322,9 @@ async def get_data():
 
 
 @app.get("/api/data/history")
+@limiter.limit("60/minute")
 async def get_data_history(
+    request: Request,
     limit:   int                = 100,
     offset:  int                = 0,
     from_ts: Optional[str]      = Query(default=None, alias="from"),
@@ -333,11 +343,17 @@ async def get_data_history(
       order   — "desc" (newest first, default) or "asc" (oldest first)
 
     Returns {"rows": [...], "total": N, "limit": N, "offset": N}.
+    Rate-limited to 60 requests/minute per IP to prevent DoS on large DBs.
     """
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None, query_history, limit, offset, from_ts, to_ts, order
     )
+
+
+def _client_ip(request: Request) -> str:
+    """Return the connecting client's IP address, or 'unknown'."""
+    return request.client.host if request.client else "unknown"
 
 
 def _db_guard():
@@ -349,12 +365,15 @@ def _db_guard():
         )
 
 @app.get("/api/data/visualize/fields")
-async def get_viz_fields(user: str = Depends(verify_session)):
+@limiter.limit("60/minute")
+async def get_viz_fields(request: Request, user: str = Depends(verify_session)):
     """Return the list of plottable fields with label and unit metadata."""
     return VIZ_FIELD_META
 
 @app.get("/api/data/visualize")
+@limiter.limit("20/minute")
 async def get_visualize(
+    request:       Request,
     fields:        str           = Query(default="BattPercentage,PVPower,LoadPower"),
     from_ts:       Optional[str] = Query(default=None, alias="from"),
     to_ts:         Optional[str] = Query(default=None, alias="to"),
@@ -368,6 +387,7 @@ async def get_visualize(
 
     Processing: date filter → row resampling → spike filter → smoothing.
     Returns timestamps + one series object per requested field.
+    Rate-limited to 20 requests/minute per IP to prevent DoS on large DBs.
     """
     field_list = [f.strip() for f in fields.split(",") if f.strip()]
     loop = asyncio.get_running_loop()
@@ -376,9 +396,10 @@ async def get_visualize(
     )
 
 @app.get("/api/data/download")
-async def download_db(user: str = Depends(verify_session)):
+async def download_db(request: Request, user: str = Depends(verify_session)):
     """Download the raw SQLite telemetry database file (auth required)."""
     _db_guard()
+    await admin_log("DOWNLOAD", "format=sqlite", ip=_client_ip(request))
     return FileResponse(
         path=config.DB_NAME,
         media_type="application/octet-stream",
@@ -386,9 +407,10 @@ async def download_db(user: str = Depends(verify_session)):
     )
 
 @app.get("/api/data/download/csv")
-async def download_csv(user: str = Depends(verify_session)):
+async def download_csv(request: Request, user: str = Depends(verify_session)):
     """Download all telemetry rows as a CSV file (auth required)."""
     _db_guard()
+    await admin_log("DOWNLOAD", "format=csv", ip=_client_ip(request))
 
     def _build():
         result = query_history(limit=1_000_000, offset=0, from_ts=None, to_ts=None, order="asc")
@@ -409,9 +431,10 @@ async def download_csv(user: str = Depends(verify_session)):
     )
 
 @app.get("/api/data/download/xlsx")
-async def download_xlsx(user: str = Depends(verify_session)):
+async def download_xlsx(request: Request, user: str = Depends(verify_session)):
     """Download all telemetry rows as an Excel file (auth required)."""
     _db_guard()
+    await admin_log("DOWNLOAD", "format=xlsx", ip=_client_ip(request))
 
     def _build():
         import openpyxl
@@ -476,16 +499,23 @@ async def get_settings(user: str = Depends(verify_session)):
     return _settings_snapshot()
 
 @app.patch("/api/settings")
-async def update_settings(body: SettingsUpdate, user: str = Depends(verify_session)):
+async def update_settings(request: Request, body: SettingsUpdate, user: str = Depends(verify_session)):
+    ip = _client_ip(request)
+    changed: list = []
+
     if body.data_directory is not None:
         d = body.data_directory.strip()
         if not d:
             raise HTTPException(status_code=400, detail="data_directory cannot be empty")
         try:
             await asyncio.to_thread(apply_data_directory, d)
+        except ValueError as e:
+            await admin_log("PATH_REJECTED", f"attempted={d}  reason={e}", ip=ip)
+            raise HTTPException(status_code=400, detail=str(e))
         except OSError as e:
             raise HTTPException(status_code=400, detail=f"Cannot create directory: {e}")
         await asyncio.to_thread(save_setting, "data_directory", config.DATA_DIRECTORY)
+        changed.append(f"data_directory={config.DATA_DIRECTORY}")
         # Initialise telemetry DB now that the directory exists.
         if config.DATA_MAN:
             await asyncio.to_thread(check_db)
@@ -499,27 +529,34 @@ async def update_settings(body: SettingsUpdate, user: str = Depends(verify_sessi
             raise HTTPException(status_code=400, detail="read_interval must be 1–3600")
         config.READ_INTERVAL = body.read_interval
         await asyncio.to_thread(save_setting, "read_interval", body.read_interval)
+        changed.append(f"read_interval={body.read_interval}")
 
     if body.data_man is not None:
         config.DATA_MAN = body.data_man
         await asyncio.to_thread(save_setting, "data_man", body.data_man)
+        changed.append(f"data_man={body.data_man}")
 
     if body.sim_mode is not None:
         if not body.sim_mode and config.CONTROLLER is None:
             raise HTTPException(status_code=400, detail="Cannot disable simulator — no hardware controller is connected")
         config.SIM_MODE = body.sim_mode
         await asyncio.to_thread(save_setting, "sim_mode", body.sim_mode)
+        changed.append(f"sim_mode={body.sim_mode}")
 
     if body.token_expire_hours is not None:
         if not 1 <= body.token_expire_hours <= 720:
             raise HTTPException(status_code=400, detail="token_expire_hours must be 1–720")
         config.TOKEN_EXPIRE_HOURS = body.token_expire_hours
         await asyncio.to_thread(save_setting, "token_expire_hours", body.token_expire_hours)
+        changed.append(f"token_expire_hours={body.token_expire_hours}")
+
+    if changed:
+        await admin_log("SETTINGS_CHANGE", "  ".join(changed), ip=ip)
 
     return _settings_snapshot()
 
 @app.delete("/api/settings/{key}")
-async def reset_setting(key: str, user: str = Depends(verify_session)):
+async def reset_setting(key: str, request: Request, user: str = Depends(verify_session)):
     _restorable = {"read_interval", "data_man", "sim_mode", "token_expire_hours"}
     if key not in _restorable:
         raise HTTPException(status_code=404, detail=f"Unknown or non-resettable setting: {key}")
@@ -540,20 +577,24 @@ async def reset_setting(key: str, user: str = Depends(verify_session)):
     }
     _restore[key](env_val)
 
+    await admin_log("RESET_SETTING", f"key={key}  reverted_to={env_val}", ip=_client_ip(request))
     return _settings_snapshot()
 
 
 @app.post("/api/settings/password")
-async def change_password(body: PasswordChange, user: str = Depends(verify_session)):
+async def change_password(request: Request, body: PasswordChange, user: str = Depends(verify_session)):
+    ip = _client_ip(request)
     if not config.ADMIN_PASSWORD_HASH:
         raise HTTPException(status_code=503, detail="No password configured on server")
     if not _bcrypt.checkpw(body.current_password.encode(), config.ADMIN_PASSWORD_HASH.encode()):
+        await admin_log("PASSWORD_CHANGE_FAILED", f"user={user}", ip=ip)
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     if len(body.new_password) < 8:
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
     new_hash = _bcrypt.hashpw(body.new_password.encode(), _bcrypt.gensalt()).decode()
     config.ADMIN_PASSWORD_HASH = new_hash
     await asyncio.to_thread(save_setting, "admin_password_hash", new_hash)
+    await admin_log("PASSWORD_CHANGE", f"user={user}", ip=ip)
     return {"message": "Password updated"}
 
 
@@ -565,19 +606,25 @@ async def get_power_profile(_=Depends(require_controller)):
     return {"profile": await loop.run_in_executor(None, check_power_profile)}
 
 @app.post("/api/performance-mode")
-async def set_performance(user: str = Depends(verify_session), _=Depends(require_real_controller)):
+async def set_performance(request: Request, user: str = Depends(verify_session), _=Depends(require_real_controller)):
     loop = asyncio.get_running_loop()
-    return {"profile": await loop.run_in_executor(None, set_power_profile, "performance")}
+    result = await loop.run_in_executor(None, set_power_profile, "performance")
+    await admin_log("POWER_PROFILE", "profile=performance", ip=_client_ip(request))
+    return {"profile": result}
 
 @app.post("/api/power-saver-mode")
-async def set_power_saver(user: str = Depends(verify_session), _=Depends(require_real_controller)):
+async def set_power_saver(request: Request, user: str = Depends(verify_session), _=Depends(require_real_controller)):
     loop = asyncio.get_running_loop()
-    return {"profile": await loop.run_in_executor(None, set_power_profile, "power-saver")}
+    result = await loop.run_in_executor(None, set_power_profile, "power-saver")
+    await admin_log("POWER_PROFILE", "profile=power-saver", ip=_client_ip(request))
+    return {"profile": result}
 
 @app.post("/api/balanced")
-async def set_balanced(user: str = Depends(verify_session), _=Depends(require_real_controller)):
+async def set_balanced(request: Request, user: str = Depends(verify_session), _=Depends(require_real_controller)):
     loop = asyncio.get_running_loop()
-    return {"profile": await loop.run_in_executor(None, set_power_profile, "balanced")}
+    result = await loop.run_in_executor(None, set_power_profile, "balanced")
+    await admin_log("POWER_PROFILE", "profile=balanced", ip=_client_ip(request))
+    return {"profile": result}
 
 
 # Controller parameters
@@ -589,12 +636,14 @@ async def get_controller_params(_=Depends(require_controller)):
 
 @app.put("/api/controller/parameters")
 async def update_controller_params(
+    request: Request,
     body: ControllerParamsUpdate,
     user: str = Depends(verify_session),
     _=Depends(require_real_controller),
 ):
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, apply_controller_params, body.model_dump())
+    await admin_log("CONTROLLER_PARAMS_UPDATE", ip=_client_ip(request))
     return await loop.run_in_executor(None, read_controller_params)
 
 @app.get("/api/controller/stats")
@@ -608,9 +657,10 @@ async def get_controller_status(_=Depends(require_controller)):
     return await loop.run_in_executor(None, read_controller_status)
 
 @app.post("/api/controller/rtc/sync")
-async def sync_rtc(user: str = Depends(verify_session), _=Depends(require_real_controller)):
+async def sync_rtc(request: Request, user: str = Depends(verify_session), _=Depends(require_real_controller)):
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, lambda: config.CONTROLLER.set_rtc(datetime.now()))
+    await admin_log("RTC_SYNC", ip=_client_ip(request))
     return {"message": "RTC synced to server time"}
 
 

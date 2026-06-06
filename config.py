@@ -32,9 +32,10 @@ SETTINGS_DB_NAME = os.getenv(
 )
 
 # Derived paths — None until DATA_DIRECTORY is known.
-POWER_LOGS_FILE = os.path.join(DATA_DIRECTORY, "SunBlockCoreLogs.txt") if DATA_DIRECTORY else None
-DB_NAME         = os.path.join(DATA_DIRECTORY, "SunBlockCore-LL.db")   if DATA_DIRECTORY else None
-DB_TABLE_NAME   = "solardata"
+POWER_LOGS_FILE  = os.path.join(DATA_DIRECTORY, "SunBlockCoreLogs.txt")  if DATA_DIRECTORY else None
+DB_NAME          = os.path.join(DATA_DIRECTORY, "SunBlockCore-LL.db")    if DATA_DIRECTORY else None
+ADMIN_AUDIT_FILE = os.path.join(DATA_DIRECTORY, "SunBlockAdminAudit.txt") if DATA_DIRECTORY else None
+DB_TABLE_NAME    = "solardata"
 
 # ── Data collection ───────────────────────────────────────────────────────────
 DATA_MAN      = os.getenv("DATA_MAN", "true").lower() == "true"

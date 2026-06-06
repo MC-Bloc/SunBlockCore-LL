@@ -106,7 +106,8 @@ else
         [[ "$ADMIN_PASS" == "$ADMIN_PASS2" ]] && break
         warn "Passwords do not match. Try again."
     done
-    ADMIN_HASH=$("$VENV/bin/python3" -c "import bcrypt; print(bcrypt.hashpw(b'$ADMIN_PASS', bcrypt.gensalt()).decode())")
+    ADMIN_HASH=$(printf '%s' "$ADMIN_PASS" | "$VENV/bin/python3" -c \
+        "import bcrypt, sys; pw = sys.stdin.buffer.read(); print(bcrypt.hashpw(pw, bcrypt.gensalt()).decode())")
 
     # Secret key
     SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")

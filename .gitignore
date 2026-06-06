@@ -1,4 +1,19 @@
-*.json
-*.csv
 __pycache__/
 .env
+/.venv
+.claude/
+.DS_Store
+
+# SQLite databases (may contain secrets / PII)
+*.db
+
+# Generated data directory (logs, telemetry, settings)
+demo_data/
+
+# Vendored frontend assets (downloaded by scripts/vendor.sh at deploy time)
+public/vendor/
+
+# Exported data files
+*.csv
+*.xlsx
+*.json

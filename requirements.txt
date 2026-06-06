@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-socketio
+epevermodbus
+python-dotenv
+python-jose[cryptography]
+bcrypt
+slowapi
+jinja2
+openpyxl

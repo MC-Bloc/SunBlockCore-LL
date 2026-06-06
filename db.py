@@ -25,6 +25,37 @@ def _write_log(line: str):
         f.write(line)
 
 
+# ── Admin audit logging ───────────────────────────────────────────────────────
+
+async def admin_log(action: str, detail: str = "", ip: str = "") -> None:
+    """
+    Append a structured audit entry to SunBlockAdminAudit.txt.
+
+    Each line is tab-separated for easy grep / awk parsing::
+
+        2026-06-06 10:30:00  [AUDIT]  LOGIN  user=admin  ip=192.168.1.10
+
+    Falls back to stderr when DATA_DIRECTORY is not yet configured so that
+    early login/logout events are never silently dropped.
+    """
+    parts = [datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "[AUDIT]", action]
+    if detail:
+        parts.append(detail)
+    if ip:
+        parts.append(f"ip={ip}")
+    line = "  ".join(parts) + "\n"
+    await asyncio.to_thread(_write_audit_log, line)
+
+
+def _write_audit_log(line: str) -> None:
+    if not config.ADMIN_AUDIT_FILE:
+        import sys
+        print(line, end="", file=sys.stderr)
+        return
+    with open(config.ADMIN_AUDIT_FILE, "a") as f:
+        f.write(line)
+
+
 # ── Database ──────────────────────────────────────────────────────────────────
 
 def check_db():
@@ -115,18 +146,60 @@ def delete_setting(key: str) -> None:
         conn.close()
 
 
+# ── Path validation ───────────────────────────────────────────────────────────
+
+# Directories that must never be used as a DATA_DIRECTORY.
+# Checked against the *resolved* (symlink-expanded) absolute path so that
+# crafted symlink chains cannot bypass the check.
+_BLOCKED_PREFIXES = (
+    # Linux system paths
+    "/etc", "/bin", "/sbin",
+    "/usr/bin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin",
+    "/sys", "/proc", "/dev", "/run", "/boot",
+    "/root", "/lib", "/lib64", "/lib32",
+    # macOS system paths (relevant during local development)
+    "/System", "/Library",
+    "/private/etc", "/private/var/db", "/private/var/root",
+)
+
+def _validate_data_directory(path: str) -> None:
+    """
+    Raise ValueError if *path* resolves to a system-critical location.
+
+    Resolves symlinks and ``..`` traversal before checking so that crafted
+    paths like ``/home/pi/../../etc/`` are caught correctly.
+    """
+    resolved = os.path.realpath(os.path.abspath(path))
+
+    # Flat-out refuse the filesystem root.
+    if resolved == "/":
+        raise ValueError("Refusing to use filesystem root '/' as DATA_DIRECTORY.")
+
+    for blocked in _BLOCKED_PREFIXES:
+        if resolved == blocked or resolved.startswith(blocked + os.sep):
+            raise ValueError(
+                f"Path '{resolved}' is inside the protected system directory "
+                f"'{blocked}'. Choose a path inside your home directory or a "
+                "dedicated data mount."
+            )
+
+
 def apply_data_directory(path: str) -> None:
     """
     Set DATA_DIRECTORY and recompute all derived paths.
     Creates the directory if it does not exist.
     Called from load_settings() on startup and from the PATCH /api/settings
     route when the admin sets the directory for the first time via the panel.
+
+    Raises ValueError if the resolved path points at a protected system directory.
     """
     path = path.rstrip("/\\") + os.sep   # normalise: always ends with separator
+    _validate_data_directory(path)
     os.makedirs(path, exist_ok=True)
-    config.DATA_DIRECTORY  = path
-    config.POWER_LOGS_FILE = os.path.join(path, "SunBlockCoreLogs.txt")
-    config.DB_NAME         = os.path.join(path, "SunBlockCore-LL.db")
+    config.DATA_DIRECTORY    = path
+    config.POWER_LOGS_FILE   = os.path.join(path, "SunBlockCoreLogs.txt")
+    config.DB_NAME           = os.path.join(path, "SunBlockCore-LL.db")
+    config.ADMIN_AUDIT_FILE  = os.path.join(path, "SunBlockAdminAudit.txt")
 
 
 # ── Visualisation queries ─────────────────────────────────────────────────────
