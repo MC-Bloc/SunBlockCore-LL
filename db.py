@@ -238,11 +238,16 @@ def query_visualize(
 
     where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
+    # Hard cap: fetch at most 5 M rows before resampling to avoid OOM on large DBs.
+    # After resampling (step ≥ 1) the caller receives at most 5_000_000 / step points.
+    _ROW_CAP = 5_000_000
+
     conn = sqlite3.connect(config.DB_NAME, check_same_thread=False)
     try:
         cur = conn.cursor()
         cur.execute(
-            f"SELECT {col_sql} FROM {config.DB_TABLE_NAME} {where} ORDER BY Timestamp ASC",
+            f"SELECT {col_sql} FROM {config.DB_TABLE_NAME} {where}"
+            f" ORDER BY Timestamp ASC LIMIT {_ROW_CAP}",
             params,
         )
         rows = cur.fetchall()

@@ -121,6 +121,13 @@ async def lifespan(app: FastAPI):
             "Run scripts/gen_password_hash.py and set it in .env. Login is disabled."
         )
 
+    if config.SECRET_KEY in ("changeme-secret-key", ""):
+        await sunblock_log(
+            "WARNING: SECRET_KEY is set to the default value. "
+            "All existing sessions are insecure. Set a random key in .env: "
+            "python3 -c \"import secrets; print(secrets.token_hex(32))\""
+        )
+
     if not config.ADMIN_PATH:
         await sunblock_log(
             "WARNING: ADMIN_PATH is not set. "
@@ -168,8 +175,8 @@ async def lifespan(app: FastAPI):
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 
-sio       = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
-app       = FastAPI(lifespan=lifespan)
+sio       = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=[])
+app       = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 templates = Jinja2Templates(directory="templates")
 
 app.state.limiter = limiter
@@ -177,6 +184,19 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.mount("/static", StaticFiles(directory="public"), name="static")
 
 socket_app = socketio.ASGIApp(sio, app)
+
+
+# ── Security headers ──────────────────────────────────────────────────────────
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"]  = "nosniff"
+    response.headers["X-Frame-Options"]          = "DENY"
+    response.headers["Referrer-Policy"]          = "strict-origin-when-cross-origin"
+    response.headers["X-XSS-Protection"]         = "1; mode=block"
+    response.headers["Permissions-Policy"]       = "geolocation=(), microphone=(), camera=()"
+    return response
 
 
 # ── Error handlers ────────────────────────────────────────────────────────────
