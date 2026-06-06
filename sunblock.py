@@ -51,7 +51,7 @@ from auth import (
     check_session, create_token, verify_session,
     require_controller, require_real_controller,
 )
-from db import check_db, delete_setting, load_settings, query_history, save_setting, sunblock_log, write_db
+from db import apply_data_directory, check_db, delete_setting, load_settings, query_history, save_setting, sunblock_log, write_db
 from hardware import (
     apply_controller_params, check_power_profile,
     parse_data, read_controller_params,
@@ -100,9 +100,16 @@ async def polling_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    os.makedirs(config.DATA_DIRECTORY, exist_ok=True)
     await asyncio.to_thread(load_settings)
     await sunblock_log("Settings loaded from persistent store.")
+
+    if config.DATA_DIRECTORY:
+        os.makedirs(config.DATA_DIRECTORY, exist_ok=True)
+    else:
+        await sunblock_log(
+            "WARNING: DATA_DIRECTORY is not set. "
+            "Open the admin panel → Settings to configure it."
+        )
 
     if not config.ADMIN_PASSWORD_HASH:
         await sunblock_log(
@@ -121,8 +128,14 @@ async def lifespan(app: FastAPI):
     config.ACTIVE_USERS_LOCK = asyncio.Lock()
 
     if config.CONTROLLER is not None or config.SIM_MODE:
-        config.POLLING_ACTIVE = True
-        config.POLLING_TASK = asyncio.create_task(polling_loop())
+        if config.DATA_DIRECTORY:
+            config.POLLING_ACTIVE = True
+            config.POLLING_TASK = asyncio.create_task(polling_loop())
+        else:
+            await sunblock_log(
+                "Polling deferred — DATA_DIRECTORY not set. "
+                "Configure it in the admin panel to begin collecting data."
+            )
     else:
         await sunblock_log("Controller unavailable — polling disabled.")
 
@@ -162,6 +175,7 @@ async def index(request: Request):
         "is_authenticated": check_session(request),
         "sim_mode":         config.SIM_MODE,
         "env_defaults":     config.ENV_DEFAULTS,
+        "data_directory":   config.DATA_DIRECTORY or "",
     })
 
 @app.get("/api/mode")
@@ -236,6 +250,7 @@ async def get_data_history(
 
 def _settings_snapshot() -> dict:
     return {
+        "data_directory":     config.DATA_DIRECTORY or "",
         "read_interval":      config.READ_INTERVAL,
         "data_man":           config.DATA_MAN,
         "sim_mode":           config.SIM_MODE,
@@ -248,6 +263,23 @@ async def get_settings(user: str = Depends(verify_session)):
 
 @app.patch("/api/settings")
 async def update_settings(body: SettingsUpdate, user: str = Depends(verify_session)):
+    if body.data_directory is not None:
+        d = body.data_directory.strip()
+        if not d:
+            raise HTTPException(status_code=400, detail="data_directory cannot be empty")
+        try:
+            await asyncio.to_thread(apply_data_directory, d)
+        except OSError as e:
+            raise HTTPException(status_code=400, detail=f"Cannot create directory: {e}")
+        await asyncio.to_thread(save_setting, "data_directory", config.DATA_DIRECTORY)
+        # Initialise telemetry DB now that the directory exists.
+        if config.DATA_MAN:
+            await asyncio.to_thread(check_db)
+        # Start polling if it was held back only because DATA_DIRECTORY was missing.
+        if not config.POLLING_ACTIVE and (config.CONTROLLER is not None or config.SIM_MODE):
+            config.POLLING_ACTIVE = True
+            config.POLLING_TASK = asyncio.create_task(polling_loop())
+
     if body.read_interval is not None:
         if not 1 <= body.read_interval <= 3600:
             raise HTTPException(status_code=400, detail="read_interval must be 1–3600")

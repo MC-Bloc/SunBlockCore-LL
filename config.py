@@ -15,20 +15,26 @@ load_dotenv()
 CONTROLLER_PORT  = os.getenv("CONTROLLER_PORT",  "/dev/ttyACM0")
 CONTROLLER_SLAVE = int(os.getenv("CONTROLLER_SLAVE", 1))
 
-# ── Paths ���────────────────────────────────────────────────────────────────────
-DATA_DIRECTORY    = os.getenv("DATA_DIRECTORY")
+# ── Paths ─────────────────────────────────────────────────────────────────────
+# DATA_DIRECTORY may be absent on first run — the admin panel accepts it at
+# runtime and saves it to the settings DB so it persists across restarts.
+DATA_DIRECTORY    = os.getenv("DATA_DIRECTORY")   # None until set
 POWER_DRAW_SCRIPT = os.getenv("POWER_DRAW_SCRIPT_ADDR")
 
-if not DATA_DIRECTORY:
-    raise ValueError(
-        "DATA_DIRECTORY is not set. "
-        "Add DATA_DIRECTORY=/path/to/your/data to your .env file."
-    )
+# The settings DB lives at a fixed location independent of DATA_DIRECTORY so
+# the server can start, accept a data directory from the admin panel, and save
+# it before DATA_DIRECTORY exists on disk. Override with SETTINGS_DB env var.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+SETTINGS_DB_NAME = os.getenv(
+    "SETTINGS_DB",
+    os.path.join(DATA_DIRECTORY, "sunblock_settings.db") if DATA_DIRECTORY
+    else os.path.join(_HERE, "sunblock_settings.db"),
+)
 
-POWER_LOGS_FILE  = os.path.join(DATA_DIRECTORY, "SunBlockCoreLogs.txt")
-DB_NAME          = os.path.join(DATA_DIRECTORY, "SunBlockCore-LL.db")
-DB_TABLE_NAME    = "solardata"
-SETTINGS_DB_NAME = os.path.join(DATA_DIRECTORY, "sunblock_settings.db")
+# Derived paths — None until DATA_DIRECTORY is known.
+POWER_LOGS_FILE = os.path.join(DATA_DIRECTORY, "SunBlockCoreLogs.txt") if DATA_DIRECTORY else None
+DB_NAME         = os.path.join(DATA_DIRECTORY, "SunBlockCore-LL.db")   if DATA_DIRECTORY else None
+DB_TABLE_NAME   = "solardata"
 
 # ── Data collection ───────────────────────────────────────────────────────────
 DATA_MAN      = os.getenv("DATA_MAN", "true").lower() == "true"

@@ -25,6 +25,7 @@ class ControllerParamsUpdate(BaseModel):
     voltage_controls: Optional[dict] = None
 
 class SettingsUpdate(BaseModel):
+    data_directory:     Optional[str]   = None  # absolute path; required on first run
     read_interval:      Optional[int]   = None  # seconds, 1–3600
     data_man:           Optional[bool]  = None
     sim_mode:           Optional[bool]  = None

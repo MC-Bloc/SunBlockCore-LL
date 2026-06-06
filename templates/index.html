@@ -149,6 +149,10 @@
     .btn-reset { padding: 5px 8px; font-size: 0.82rem; border-radius: 5px; border: 1px solid var(--border); color: var(--muted); background: transparent; cursor: pointer; line-height: 1; transition: color 0.15s, border-color 0.15s; }
     .btn-reset:hover { color: var(--accent); border-color: var(--accent); }
 
+    /* Setup warning banner */
+    .setup-banner { display: flex; align-items: center; gap: 10px; background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.35); border-radius: 8px; padding: 11px 16px; margin-bottom: 20px; font-size: 0.85rem; color: var(--accent); }
+    .setup-banner a { color: var(--accent); font-weight: 600; cursor: pointer; text-decoration: underline; }
+
     /* Feedback banners */
     .feedback-ok  { background: rgba(16,185,129,0.12); color: var(--green); border: 1px solid rgba(16,185,129,0.25); border-radius: 6px; padding: 8px 14px; font-size: 0.82rem; margin-bottom: 14px; }
     .feedback-err { background: rgba(239,68,68,0.12);  color: var(--red);   border: 1px solid rgba(239,68,68,0.25);  border-radius: 6px; padding: 8px 14px; font-size: 0.82rem; margin-bottom: 14px; }
@@ -174,7 +178,7 @@
 </head>
 <body>
 
-<div x-data='sunblock({{ is_authenticated | tojson }}, {{ sim_mode | tojson }}, {{ env_defaults | tojson }})'>
+<div x-data='sunblock({{ is_authenticated | tojson }}, {{ sim_mode | tojson }}, {{ env_defaults | tojson }}, {{ data_directory | tojson }})'>
 
   <!-- Header -->
   <header>
@@ -196,6 +200,12 @@
 
   <!-- ══ LIVE ══ -->
   <div class="panel" x-show="tab === 'live'">
+
+    <!-- Data directory not configured warning -->
+    <div class="setup-banner" x-show="!dataDirectory">
+      ⚠ Data directory is not set — data collection and history are disabled.
+      <a @click="switchTab('settings')">Configure in Settings →</a>
+    </div>
 
     <div class="auth-bar">
       <span :class="authed ? 'color: var(--green)' : ''" x-text="authed ? '🔓 Logged in' : '🔒 Not logged in'"></span>
@@ -404,6 +414,35 @@
 
     <template x-if="authed">
       <div>
+
+        <!-- Data Directory -->
+        <div class="settings-section" :style="!dataDirectory ? 'border-color: rgba(245,158,11,0.5)' : ''">
+          <div class="settings-title" :style="!dataDirectory ? 'color: var(--accent)' : ''">
+            Data Directory<span x-show="!dataDirectory"> — required</span>
+          </div>
+          <div x-show="!dataDirectory" class="feedback-err" style="margin-bottom:12px">
+            Set a directory path where SunBlock will store the database and logs.
+            The directory will be created automatically.
+          </div>
+          <div x-show="settingsMsg && settingsMsgDataDir" :class="settingsMsgOk ? 'feedback-ok' : 'feedback-err'" x-text="settingsMsg"></div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Directory Path</div>
+              <div class="settings-hint" x-show="dataDirectory">Current: <span x-text="dataDirectory"></span></div>
+              <div class="settings-hint" x-show="!dataDirectory" style="color:var(--accent)">No directory configured — data collection is disabled</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;flex:1;max-width:420px;margin-left:16px">
+              <input class="settings-input" type="text" style="width:100%;text-align:left"
+                     x-model="dataDirDraft"
+                     placeholder="/opt/sunblock/data"
+                     @keydown.enter="saveDataDir()" />
+              <button class="btn btn-action" @click="saveDataDir()"
+                      :style="!dataDirectory ? 'border-color:var(--accent);color:var(--accent)' : ''">
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
 
         <!-- Polling -->
         <div class="settings-section">
@@ -687,15 +726,17 @@
   }
 
   document.addEventListener('alpine:init', () => {
-    Alpine.data('sunblock', (initialAuth, initialSimMode, initialEnvDefaults) => ({
+    Alpine.data('sunblock', (initialAuth, initialSimMode, initialEnvDefaults, initialDataDir) => ({
 
       // ── State ──
-      tab:         'live',
-      connected:   false,
-      authed:      initialAuth,
-      simMode:     initialSimMode,
-      envDefaults: initialEnvDefaults,
-      live:        null,
+      tab:          'live',
+      connected:    false,
+      authed:       initialAuth,
+      simMode:      initialSimMode,
+      envDefaults:  initialEnvDefaults,
+      dataDirectory: initialDataDir,
+      dataDirDraft:  initialDataDir,
+      live:         null,
 
       // Charts
       chartTimes: [], chartBatt: [], chartPV: [],
@@ -709,7 +750,7 @@
 
       // Settings
       settingsDraft: { read_interval: 1, data_man: true, sim_mode: false, token_expire_hours: 24 },
-      settingsMsg: '', settingsMsgOk: true,
+      settingsMsg: '', settingsMsgOk: true, settingsMsgDataDir: false,
       pwForm: { current: '', next: '', confirm: '' },
       pwMsg: '', pwMsgOk: true,
 
@@ -879,13 +920,44 @@
         if (!this.authed) return;
         const res = await fetch('/api/settings');
         if (res.ok) {
-          this.settingsDraft = await res.json();
-          this.simMode = this.settingsDraft.sim_mode;
+          const data = await res.json();
+          this.settingsDraft  = data;
+          this.simMode        = data.sim_mode;
+          this.dataDirectory  = data.data_directory;
+          this.dataDirDraft   = data.data_directory;
         }
+      },
+
+      async saveDataDir() {
+        this.settingsMsg = '';
+        this.settingsMsgDataDir = true;
+        const d = this.dataDirDraft.trim();
+        if (!d) { this.settingsMsgOk = false; this.settingsMsg = 'Path cannot be empty.'; return; }
+        try {
+          const res = await fetch('/api/settings', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ data_directory: d }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            this.dataDirectory  = data.data_directory;
+            this.dataDirDraft   = data.data_directory;
+            this.settingsDraft  = data;
+            this.simMode        = data.sim_mode;
+            this.settingsMsgOk  = true;
+            this.settingsMsg    = 'Data directory saved.';
+            setTimeout(() => { if (this.settingsMsg === 'Data directory saved.') this.settingsMsg = ''; }, 3000);
+          } else {
+            this.settingsMsgOk = false;
+            this.settingsMsg   = data.detail || 'Failed to save.';
+          }
+        } catch { this.settingsMsgOk = false; this.settingsMsg = 'Connection error.'; }
       },
 
       async saveSetting(key, value) {
         this.settingsMsg = '';
+        this.settingsMsgDataDir = false;
         try {
           const res = await fetch('/api/settings', {
             method: 'PATCH',
@@ -894,10 +966,12 @@
           });
           const data = await res.json();
           if (res.ok) {
-            this.settingsDraft = data;
-            this.simMode = data.sim_mode;
-            this.settingsMsgOk = true;
-            this.settingsMsg = 'Saved.';
+            this.settingsDraft  = data;
+            this.simMode        = data.sim_mode;
+            this.dataDirectory  = data.data_directory;
+            this.dataDirDraft   = data.data_directory;
+            this.settingsMsgOk  = true;
+            this.settingsMsg    = 'Saved.';
             setTimeout(() => { if (this.settingsMsg === 'Saved.') this.settingsMsg = ''; }, 2500);
           } else {
             // revert draft to actual server state on failure
@@ -913,14 +987,17 @@
 
       async resetSetting(key) {
         this.settingsMsg = '';
+        this.settingsMsgDataDir = false;
         try {
           const res = await fetch(`/api/settings/${key}`, { method: 'DELETE' });
           const data = await res.json();
           if (res.ok) {
-            this.settingsDraft = data;
-            this.simMode = data.sim_mode;
-            this.settingsMsgOk = true;
-            this.settingsMsg = 'Reset to .env default.';
+            this.settingsDraft  = data;
+            this.simMode        = data.sim_mode;
+            this.dataDirectory  = data.data_directory;
+            this.dataDirDraft   = data.data_directory;
+            this.settingsMsgOk  = true;
+            this.settingsMsg    = 'Reset to .env default.';
             setTimeout(() => { if (this.settingsMsg === 'Reset to .env default.') this.settingsMsg = ''; }, 2500);
           } else {
             await this.loadSettings();

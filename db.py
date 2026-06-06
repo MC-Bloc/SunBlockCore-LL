@@ -16,6 +16,11 @@ async def sunblock_log(message: str):
     await asyncio.to_thread(_write_log, line)
 
 def _write_log(line: str):
+    if not config.POWER_LOGS_FILE:
+        # DATA_DIRECTORY not configured yet — echo to stderr so nothing is lost.
+        import sys
+        print(line, end='', file=sys.stderr)
+        return
     with open(config.POWER_LOGS_FILE, 'a') as f:
         f.write(line)
 
@@ -23,6 +28,8 @@ def _write_log(line: str):
 # ── Database ──────────────────────────────────────────────────────────────────
 
 def check_db():
+    if config.DB_NAME is None:
+        return   # DATA_DIRECTORY not set yet
     if config.DB_CONNECTION is not None and config.DB_CURSOR is not None:
         return
     create_table = not os.path.isfile(config.DB_NAME)
@@ -71,6 +78,7 @@ def load_settings():
         conn.close()
 
     _apply = {
+        "data_directory":     lambda v: apply_data_directory(v),
         "read_interval":      lambda v: setattr(config, "READ_INTERVAL",       int(v)),
         "data_man":           lambda v: setattr(config, "DATA_MAN",            v == "true"),
         "sim_mode":           lambda v: setattr(config, "SIM_MODE",            v == "true"),
@@ -107,6 +115,20 @@ def delete_setting(key: str) -> None:
         conn.close()
 
 
+def apply_data_directory(path: str) -> None:
+    """
+    Set DATA_DIRECTORY and recompute all derived paths.
+    Creates the directory if it does not exist.
+    Called from load_settings() on startup and from the PATCH /api/settings
+    route when the admin sets the directory for the first time via the panel.
+    """
+    path = path.rstrip("/\\") + os.sep   # normalise: always ends with separator
+    os.makedirs(path, exist_ok=True)
+    config.DATA_DIRECTORY  = path
+    config.POWER_LOGS_FILE = os.path.join(path, "SunBlockCoreLogs.txt")
+    config.DB_NAME         = os.path.join(path, "SunBlockCore-LL.db")
+
+
 # ── History queries ───────────────────────────────────────────────────────────
 
 def query_history(
@@ -127,7 +149,7 @@ def query_history(
     the empty payload is returned instead of raising.
     """
     empty = {"rows": [], "total": 0, "limit": limit, "offset": offset}
-    if not os.path.isfile(config.DB_NAME):
+    if not config.DB_NAME or not os.path.isfile(config.DB_NAME):
         return empty
 
     limit  = max(1, min(1000, limit))
