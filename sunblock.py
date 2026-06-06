@@ -30,6 +30,8 @@ Dependencies:
 '''
 
 import asyncio
+import csv
+import io
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -40,7 +42,7 @@ import socketio
 from epevermodbus.driver import EpeverChargeController
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from slowapi import _rate_limit_exceeded_handler
@@ -284,18 +286,96 @@ async def get_data_history(
     )
 
 
-@app.get("/api/data/download")
-async def download_db(user: str = Depends(verify_session)):
-    """Download the raw SQLite telemetry database file (auth required)."""
+def _db_guard():
+    """Raise 404 if the telemetry DB doesn't exist yet."""
     if not config.DB_NAME or not os.path.isfile(config.DB_NAME):
         raise HTTPException(
             status_code=404,
             detail="Database file not found. DATA_DIRECTORY may not be configured or data collection may be disabled.",
         )
+
+@app.get("/api/data/download")
+async def download_db(user: str = Depends(verify_session)):
+    """Download the raw SQLite telemetry database file (auth required)."""
+    _db_guard()
     return FileResponse(
         path=config.DB_NAME,
         media_type="application/octet-stream",
         filename="SunBlockCore-LL.db",
+    )
+
+@app.get("/api/data/download/csv")
+async def download_csv(user: str = Depends(verify_session)):
+    """Download all telemetry rows as a CSV file (auth required)."""
+    _db_guard()
+
+    def _build():
+        result = query_history(limit=1_000_000, offset=0, from_ts=None, to_ts=None, order="asc")
+        rows = result["rows"]
+        buf = io.StringIO()
+        if rows:
+            writer = csv.DictWriter(buf, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+        return buf.getvalue()
+
+    loop = asyncio.get_running_loop()
+    content = await loop.run_in_executor(None, _build)
+    return StreamingResponse(
+        iter([content]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=SunBlockCore-LL.csv"},
+    )
+
+@app.get("/api/data/download/xlsx")
+async def download_xlsx(user: str = Depends(verify_session)):
+    """Download all telemetry rows as an Excel file (auth required)."""
+    _db_guard()
+
+    def _build():
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+
+        result = query_history(limit=1_000_000, offset=0, from_ts=None, to_ts=None, order="asc")
+        rows = result["rows"]
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Solar Data"
+
+        if rows:
+            headers = list(rows[0].keys())
+            # Header row styling
+            header_fill = PatternFill("solid", fgColor="1a1d27")
+            header_font = Font(bold=True, color="F59E0B")
+            for col, h in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col, value=h)
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal="center")
+
+            # Data rows
+            for row_idx, row in enumerate(rows, 2):
+                for col_idx, key in enumerate(headers, 1):
+                    ws.cell(row=row_idx, column=col_idx, value=row[key])
+
+            # Auto-fit column widths
+            for col in ws.columns:
+                max_len = max((len(str(c.value)) if c.value is not None else 0) for c in col)
+                ws.column_dimensions[get_column_letter(col[0].column)].width = min(max_len + 2, 30)
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf.getvalue()
+
+    loop = asyncio.get_running_loop()
+    content = await loop.run_in_executor(None, _build)
+    return StreamingResponse(
+        iter([content]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=SunBlockCore-LL.xlsx"},
     )
 
 
