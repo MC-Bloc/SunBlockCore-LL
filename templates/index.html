@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SunBlock Admin</title>
+  <link rel="stylesheet" href="/static/vendor/uplot.min.css" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #0f1117;
+      --surface: #1a1d27;
+      --border:  #2a2d3a;
+      --text:    #e2e8f0;
+      --muted:   #64748b;
+      --accent:  #f59e0b;
+      --green:   #10b981;
+      --red:     #ef4444;
+    }
+
+    body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; }
+
+    /* Header */
+    header { display: flex; justify-content: space-between; align-items: center; padding: 13px 24px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 50; }
+    header h1 { font-size: 1.05rem; font-weight: 600; color: var(--accent); }
+    .status { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--muted); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+    /* Tabs */
+    .tabs { display: flex; gap: 2px; padding: 0 24px; background: var(--surface); border-bottom: 1px solid var(--border); }
+    .tab { padding: 10px 18px; font-size: 0.85rem; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; transition: color 0.15s, border-color 0.15s; user-select: none; }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+    /* Layout */
+    .panel { padding: 24px; max-width: 1000px; margin: 0 auto; }
+    .grid  { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 16px; margin-bottom: 20px; }
+
+    /* Cards */
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; }
+    .card-title { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 14px; }
+    .row { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; font-size: 0.88rem; border-bottom: 1px solid var(--border); }
+    .row:last-child { border-bottom: none; }
+    .row-label { color: var(--muted); }
+    .row-value { font-weight: 500; font-variant-numeric: tabular-nums; }
+
+    /* Battery bar */
+    .batt-pct { font-size: 2.2rem; font-weight: 700; line-height: 1; margin-bottom: 10px; }
+    .bar-track { background: var(--border); border-radius: 4px; height: 7px; overflow: hidden; margin-bottom: 14px; }
+    .bar-fill  { height: 100%; border-radius: 4px; transition: width 0.6s ease, background 0.6s ease; }
+
+    /* Chart container */
+    .chart-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; margin-bottom: 20px; }
+    .chart-wrap .card-title { margin-bottom: 12px; }
+    .chart-wrap .uplot { width: 100% !important; }
+
+    /* Auth bar */
+    .auth-bar { display: flex; justify-content: space-between; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 11px 16px; margin-bottom: 20px; font-size: 0.82rem; }
+
+    /* Profile */
+    .profile-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; margin-bottom: 20px; }
+    .profile-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+    .profile-btns { display: flex; gap: 10px; flex-wrap: wrap; }
+    .profile-btn { flex: 1; min-width: 110px; padding: 9px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 0.88rem; cursor: pointer; transition: border-color 0.15s, color 0.15s, background 0.15s; }
+    .profile-btn:not([disabled]):hover { border-color: var(--accent); color: var(--accent); }
+    .profile-btn.active { border-color: var(--accent); background: rgba(245,158,11,0.08); color: var(--accent); font-weight: 600; }
+    .profile-btn[disabled] { opacity: 0.35; cursor: not-allowed; }
+
+    /* Params table */
+    .param-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    .param-table th { text-align: left; padding: 7px 10px; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); border-bottom: 1px solid var(--border); }
+    .param-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+    .param-table tr:last-child td { border-bottom: none; }
+    .param-table td:first-child { color: var(--muted); }
+
+    /* Energy tiles */
+    .energy-period { margin-bottom: 28px; }
+    .energy-period h3 { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 12px; }
+    .energy-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+    .energy-tile { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    .energy-tile .label { font-size: 0.75rem; color: var(--muted); margin-bottom: 6px; }
+    .energy-tile .value { font-size: 1.5rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .energy-tile .unit  { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
+    .energy-tile.gen .value { color: var(--green); }
+    .energy-tile.con .value { color: var(--accent); }
+
+    /* Buttons */
+    .btn { padding: 5px 12px; border-radius: 5px; font-size: 0.78rem; cursor: pointer; border: 1px solid; background: transparent; transition: background 0.15s, color 0.15s, border-color 0.15s; }
+    .btn-accent  { border-color: var(--accent); color: var(--accent); }
+    .btn-accent:hover { background: rgba(245,158,11,0.1); }
+    .btn-muted   { border-color: var(--border); color: var(--muted); }
+    .btn-muted:hover { border-color: var(--red); color: var(--red); }
+    .btn-action  { padding: 7px 14px; border-color: var(--border); color: var(--text); font-size: 0.85rem; }
+    .btn-action:not([disabled]):hover { border-color: var(--accent); color: var(--accent); }
+    .btn-action[disabled] { opacity: 0.4; cursor: not-allowed; }
+
+    .section-actions { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 20px; }
+
+    /* Badges */
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+    .badge-ok   { background: rgba(16,185,129,0.15); color: var(--green); }
+    .badge-err  { background: rgba(239,68,68,0.15);  color: var(--red); }
+
+    /* Modals */
+    .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 200; align-items: flex-start; justify-content: center; padding: 40px 16px; overflow-y: auto; }
+    .overlay.open { display: flex; }
+    .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 28px; width: 100%; max-width: 480px; }
+    .modal h2 { font-size: 1.05rem; font-weight: 600; margin-bottom: 20px; }
+    .modal-section { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 18px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+    .modal-actions { display: flex; gap: 10px; margin-top: 20px; }
+
+    .field { margin-bottom: 12px; }
+    .field label { display: block; font-size: 0.78rem; color: var(--muted); margin-bottom: 4px; }
+    .field input { width: 100%; padding: 7px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.88rem; outline: none; }
+    .field input:focus { border-color: var(--accent); }
+    .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+    .form-error { font-size: 0.78rem; color: var(--red); min-height: 16px; margin: 4px 0; }
+
+    .btn-primary   { flex: 1; padding: 8px; background: var(--accent); border: none; border-radius: 6px; color: #000; font-weight: 700; font-size: 0.88rem; cursor: pointer; }
+    .btn-primary:hover { opacity: 0.88; }
+    .btn-secondary { padding: 8px 14px; background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-size: 0.88rem; cursor: pointer; }
+    .btn-secondary:hover { border-color: var(--text); color: var(--text); }
+
+    /* uPlot theme overrides */
+    .uplot .u-legend { display: none; }
+  </style>
+</head>
+<body>
+
+<div x-data="sunblock({{ is_authenticated | tojson }})">
+
+  <!-- Header -->
+  <header>
+    <h1>☀ SunBlock Admin</h1>
+    <div class="status">
+      <div class="dot" :style="connected ? 'background:var(--green)' : 'background:var(--red)'"></div>
+      <span x-text="connected ? 'Connected' : 'Disconnected'">Connecting…</span>
+    </div>
+  </header>
+
+  <!-- Tabs -->
+  <nav class="tabs">
+    <div class="tab" :class="tab === 'live'       && 'active'" @click="tab = 'live'">Live</div>
+    <div class="tab" :class="tab === 'parameters' && 'active'" @click="switchTab('parameters')">Parameters</div>
+    <div class="tab" :class="tab === 'energy'     && 'active'" @click="switchTab('energy')">Energy</div>
+  </nav>
+
+  <!-- ══ LIVE ══ -->
+  <div class="panel" x-show="tab === 'live'">
+
+    <div class="auth-bar">
+      <span :class="authed ? 'color: var(--green)' : ''" x-text="authed ? '🔓 Logged in' : '🔒 Not logged in'"></span>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-accent"  x-show="!authed" @click="loginOpen = true">Login</button>
+        <button class="btn btn-muted"   x-show="authed"  @click="doLogout()">Logout</button>
+      </div>
+    </div>
+
+    <!-- Power profile -->
+    <div class="profile-card">
+      <div class="profile-header">
+        <span class="card-title" style="margin:0">Power Profile</span>
+        <span x-text="live ? live.PowerProfile : '–'" style="font-size:0.85rem;color:var(--muted)"></span>
+      </div>
+      <div class="profile-btns">
+        <button class="profile-btn" :class="live && live.PowerProfile === 'performance' && 'active'" :disabled="!authed" @click="setProfile('performance')">Performance</button>
+        <button class="profile-btn" :class="live && live.PowerProfile === 'balanced'    && 'active'" :disabled="!authed" @click="setProfile('balanced')">Balanced</button>
+        <button class="profile-btn" :class="live && live.PowerProfile === 'power-saver' && 'active'" :disabled="!authed" @click="setProfile('power-saver')">Power Saver</button>
+      </div>
+    </div>
+
+    <!-- Data cards -->
+    <div class="grid">
+      <div class="card">
+        <div class="card-title">Battery</div>
+        <div class="batt-pct" :style="battColor()" x-text="live ? live.BattPercentage + '%' : '–%'"></div>
+        <div class="bar-track">
+          <div class="bar-fill" :style="'width:' + (live ? live.BattPercentage : 0) + '%;background:' + battColor()"></div>
+        </div>
+        <div class="row"><span class="row-label">Voltage</span>      <span class="row-value" x-text="live ? live.BattVoltage.toFixed(2) + ' V' : '–'"></span></div>
+        <div class="row"><span class="row-label">Temperature</span>  <span class="row-value" x-text="live ? live.BattTemperature.toFixed(1) + ' °C' : '–'"></span></div>
+        <div class="row"><span class="row-label">Charge Power</span> <span class="row-value" x-text="live ? live.BattChargePower.toFixed(1) + ' W' : '–'"></span></div>
+        <div class="row"><span class="row-label">Current</span>      <span class="row-value" x-text="live ? live.BattOverallCurrent.toFixed(2) + ' A' : '–'"></span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Solar Panel</div>
+        <div class="row"><span class="row-label">Voltage</span>    <span class="row-value" x-text="live ? live.PVVoltage.toFixed(2) + ' V' : '–'"></span></div>
+        <div class="row"><span class="row-label">Current</span>    <span class="row-value" x-text="live ? live.PVCurrent.toFixed(2) + ' A' : '–'"></span></div>
+        <div class="row"><span class="row-label">Power</span>      <span class="row-value" x-text="live ? live.PVPower.toFixed(1) + ' W' : '–'"></span></div>
+        <div class="row"><span class="row-label">Load Power</span> <span class="row-value" x-text="live ? live.LoadPower.toFixed(1) + ' W' : '–'"></span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">System</div>
+        <div class="row"><span class="row-label">CPU Power Draw</span>  <span class="row-value" x-text="live ? live.CPUPowerDraw + ' W' : '–'"></span></div>
+        <div class="row"><span class="row-label">Connected Users</span> <span class="row-value" x-text="live ? live.ConnectedUsers : '–'"></span></div>
+        <div class="row"><span class="row-label">Last Update</span>     <span class="row-value" x-text="live ? live.Timestamp : '–'"></span></div>
+      </div>
+    </div>
+
+    <!-- Charts -->
+    <div class="chart-wrap">
+      <div class="card-title">Battery % — last 5 min</div>
+      <div x-ref="chartBatt"></div>
+    </div>
+    <div class="chart-wrap">
+      <div class="card-title">PV Power (W) — last 5 min</div>
+      <div x-ref="chartPV"></div>
+    </div>
+  </div>
+
+  <!-- ══ PARAMETERS ══ -->
+  <div class="panel" x-show="tab === 'parameters'">
+    <div class="section-actions">
+      <button class="btn btn-action" :disabled="!authed" @click="syncRtc()">Sync RTC</button>
+      <button class="btn btn-action" :disabled="!authed" @click="openEdit()">Edit Parameters</button>
+      <button class="btn btn-action" @click="loadParams()">↻ Refresh</button>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="card-title">Battery Configuration</div>
+        <template x-if="params">
+          <div>
+            <div class="row"><span class="row-label">Type</span>               <span class="row-value" x-text="params.battery_type"></span></div>
+            <div class="row"><span class="row-label">Capacity</span>           <span class="row-value" x-text="params.battery_capacity + ' Ah'"></span></div>
+            <div class="row"><span class="row-label">Rated Voltage</span>      <span class="row-value" x-text="params.battery_rated_voltage"></span></div>
+            <div class="row"><span class="row-label">Charging Mode</span>      <span class="row-value" x-text="params.charging_mode"></span></div>
+            <div class="row"><span class="row-label">Temp Compensation</span>  <span class="row-value" x-text="params.temperature_compensation_coefficient + ' mV/°C/2V'"></span></div>
+            <div class="row"><span class="row-label">Default Load</span>       <span class="row-value" x-text="params.default_load_on_off"></span></div>
+            <div class="row"><span class="row-label">Equalize Duration</span>  <span class="row-value" x-text="params.equalize_duration + ' min'"></span></div>
+            <div class="row"><span class="row-label">Boost Duration</span>     <span class="row-value" x-text="params.boost_duration + ' min'"></span></div>
+          </div>
+        </template>
+        <div x-show="!params" style="color:var(--muted);font-size:0.85rem">Click Refresh to load</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Controller Status</div>
+        <template x-if="ctrlStatus">
+          <div>
+            <div class="row"><span class="row-label">Controller Temp</span>      <span class="row-value" x-text="ctrlStatus.controller_temperature?.toFixed(1) + ' °C'"></span></div>
+            <div class="row"><span class="row-label">Remote Batt Temp</span>     <span class="row-value" x-text="ctrlStatus.remote_battery_temperature?.toFixed(1) + ' °C'"></span></div>
+            <div class="row"><span class="row-label">Load Voltage</span>         <span class="row-value" x-text="ctrlStatus.load_voltage?.toFixed(2) + ' V'"></span></div>
+            <div class="row"><span class="row-label">Load Current</span>         <span class="row-value" x-text="ctrlStatus.load_current?.toFixed(2) + ' A'"></span></div>
+            <div class="row"><span class="row-label">Rated Charge Current</span> <span class="row-value" x-text="ctrlStatus.rated_charging_current + ' A'"></span></div>
+            <div class="row"><span class="row-label">Day / Night</span>          <span class="row-value" x-text="ctrlStatus.is_day ? '☀ Day' : '🌙 Night'"></span></div>
+            <div class="row"><span class="row-label">RTC</span>                  <span class="row-value" x-text="ctrlStatus.rtc"></span></div>
+          </div>
+        </template>
+        <div x-show="!ctrlStatus" style="color:var(--muted);font-size:0.85rem">Click Refresh to load</div>
+      </div>
+    </div>
+
+    <!-- Voltage thresholds -->
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-title">Voltage Thresholds</div>
+      <template x-if="params && params.voltage_controls">
+        <table class="param-table">
+          <thead><tr><th>Register</th><th>Value</th></tr></thead>
+          <tbody>
+            <template x-for="[key, val] in Object.entries(params.voltage_controls)" :key="key">
+              <tr>
+                <td x-text="key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())"></td>
+                <td x-text="Number(val).toFixed(2) + ' V'"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </template>
+      <div x-show="!params" style="color:var(--muted);font-size:0.85rem;padding:4px 0">Click Refresh to load</div>
+    </div>
+
+    <!-- Equipment status -->
+    <div class="card">
+      <div class="card-title">Equipment Status</div>
+      <template x-if="ctrlStatus">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;font-size:0.85rem">
+          <template x-for="[section, data] in [['Charging', ctrlStatus.charging_status], ['Discharging', ctrlStatus.discharging_status], ['Battery', ctrlStatus.battery_status]]" :key="section">
+            <div>
+              <div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin-bottom:8px" x-text="section"></div>
+              <template x-for="[k, v] in Object.entries(data || {})" :key="k">
+                <div class="row">
+                  <span class="row-label" x-text="k.replace(/_/g,' ')"></span>
+                  <template x-if="typeof v === 'boolean'">
+                    <span :class="v ? 'badge badge-err' : 'badge badge-ok'" x-text="v ? 'Yes' : 'No'"></span>
+                  </template>
+                  <template x-if="typeof v !== 'boolean'">
+                    <span class="row-value" x-text="v"></span>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </template>
+      <div x-show="!ctrlStatus" style="color:var(--muted);font-size:0.85rem">Click Refresh to load</div>
+    </div>
+  </div>
+
+  <!-- ══ ENERGY ══ -->
+  <div class="panel" x-show="tab === 'energy'">
+    <div class="section-actions">
+      <button class="btn btn-action" @click="loadStats()">↻ Refresh</button>
+    </div>
+
+    <div class="energy-period">
+      <h3>Today</h3>
+      <div class="energy-grid">
+        <div class="energy-tile gen"><div class="label">Generated</div><div class="value" x-text="stats ? fmt(stats.generated_today) : '–'"></div><div class="unit">kWh</div></div>
+        <div class="energy-tile con"><div class="label">Consumed</div> <div class="value" x-text="stats ? fmt(stats.consumed_today) : '–'"></div><div class="unit">kWh</div></div>
+        <div class="energy-tile">    <div class="label">PV Max</div>   <div class="value" x-text="stats ? fmt(stats.pv_voltage_max_today) : '–'"></div><div class="unit">V</div></div>
+        <div class="energy-tile">    <div class="label">PV Min</div>   <div class="value" x-text="stats ? fmt(stats.pv_voltage_min_today) : '–'"></div><div class="unit">V</div></div>
+        <div class="energy-tile">    <div class="label">Batt Max</div> <div class="value" x-text="stats ? fmt(stats.batt_voltage_max_today) : '–'"></div><div class="unit">V</div></div>
+        <div class="energy-tile">    <div class="label">Batt Min</div> <div class="value" x-text="stats ? fmt(stats.batt_voltage_min_today) : '–'"></div><div class="unit">V</div></div>
+      </div>
+    </div>
+
+    <div class="energy-period">
+      <h3>This Month</h3>
+      <div class="energy-grid">
+        <div class="energy-tile gen"><div class="label">Generated</div><div class="value" x-text="stats ? fmt(stats.generated_this_month) : '–'"></div><div class="unit">kWh</div></div>
+        <div class="energy-tile con"><div class="label">Consumed</div> <div class="value" x-text="stats ? fmt(stats.consumed_this_month) : '–'"></div><div class="unit">kWh</div></div>
+      </div>
+    </div>
+
+    <div class="energy-period">
+      <h3>This Year</h3>
+      <div class="energy-grid">
+        <div class="energy-tile gen"><div class="label">Generated</div><div class="value" x-text="stats ? fmt(stats.generated_this_year) : '–'"></div><div class="unit">kWh</div></div>
+        <div class="energy-tile con"><div class="label">Consumed</div> <div class="value" x-text="stats ? fmt(stats.consumed_this_year) : '–'"></div><div class="unit">kWh</div></div>
+      </div>
+    </div>
+
+    <div class="energy-period">
+      <h3>All Time</h3>
+      <div class="energy-grid">
+        <div class="energy-tile gen"><div class="label">Total Generated</div><div class="value" x-text="stats ? fmt(stats.total_generated) : '–'"></div><div class="unit">kWh</div></div>
+        <div class="energy-tile con"><div class="label">Total Consumed</div> <div class="value" x-text="stats ? fmt(stats.total_consumed) : '–'"></div><div class="unit">kWh</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ LOGIN MODAL ══ -->
+  <div class="overlay" :class="loginOpen && 'open'" @click.self="loginOpen = false">
+    <div class="modal" @keydown.escape.window="loginOpen = false">
+      <h2>Admin Login</h2>
+      <div class="field">
+        <label>Username</label>
+        <input type="text" x-model="loginUser" autocomplete="username" x-ref="loginUserInput" />
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input type="password" x-model="loginPass" autocomplete="current-password" @keydown.enter="doLogin()" />
+      </div>
+      <div class="form-error" x-text="loginError"></div>
+      <div class="modal-actions">
+        <button class="btn-secondary" @click="loginOpen = false">Cancel</button>
+        <button class="btn-primary"   @click="doLogin()">Login</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ EDIT PARAMS MODAL ══ -->
+  <div class="overlay" :class="editOpen && 'open'" @click.self="editOpen = false">
+    <div class="modal" @keydown.escape.window="editOpen = false">
+      <h2>Edit Controller Parameters</h2>
+
+      <div class="modal-section">Battery</div>
+      <div class="field-grid">
+        <div class="field"><label>Capacity (Ah)</label>              <input type="number" x-model.number="editForm.battery_capacity" min="1" step="1" /></div>
+        <div class="field"><label>Temp Compensation (mV/°C/2V)</label><input type="number" x-model.number="editForm.temperature_compensation_coefficient" step="0.01" /></div>
+      </div>
+
+      <div class="modal-section">Voltage Thresholds (V)</div>
+      <div class="field-grid">
+        <template x-for="key in vcKeys" :key="key">
+          <div class="field">
+            <label x-text="key.replace(/_voltage$/, '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())"></label>
+            <input type="number" step="0.01" :value="editForm.voltage_controls[key]" @input="editForm.voltage_controls[key] = parseFloat($event.target.value)" />
+          </div>
+        </template>
+      </div>
+
+      <div class="form-error" x-text="editError"></div>
+      <div class="modal-actions">
+        <button class="btn-secondary" @click="editOpen = false">Cancel</button>
+        <button class="btn-primary"   @click="saveParams()">Save</button>
+      </div>
+    </div>
+  </div>
+
+</div><!-- end x-data -->
+
+<script src="/static/vendor/socket.io.min.js"></script>
+<script src="/static/vendor/uplot.min.js"></script>
+<script>
+  const VC_KEYS = [
+    'over_voltage_disconnect_voltage','charging_limit_voltage','over_voltage_reconnect_voltage',
+    'equalize_charging_voltage','boost_charging_voltage','float_charging_voltage',
+    'boost_reconnect_charging_voltage','low_voltage_reconnect_voltage','under_voltage_recover_voltage',
+    'under_voltage_warning_voltage','low_voltage_disconnect_voltage','discharging_limit_voltage',
+  ];
+
+  const CHART_MAX  = 300; // 5 minutes at 1s
+  const CHART_H    = 130;
+
+  function chartOpts(color, yMin, yMax) {
+    return {
+      height: CHART_H,
+      cursor: { show: false },
+      legend: { show: false },
+      series: [
+        {},
+        { stroke: color, width: 2, fill: color + '22', spanGaps: true },
+      ],
+      axes: [
+        { stroke: '#64748b', grid: { stroke: '#2a2d3a' }, ticks: { stroke: '#2a2d3a' },
+          values: (_, ts) => ts.map(t => new Date(t * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })) },
+        { stroke: '#64748b', grid: { stroke: '#2a2d3a' }, ticks: { stroke: '#2a2d3a' }, size: 44 },
+      ],
+      scales: { x: { time: true }, y: { min: yMin, max: yMax } },
+    };
+  }
+
+  document.addEventListener('alpine:init', () => {
+    Alpine.data('sunblock', (initialAuth) => ({
+
+      // ── State ──
+      tab:       'live',
+      connected: false,
+      authed:    initialAuth,
+      live:      null,
+
+      // Charts
+      chartTimes: [], chartBatt: [], chartPV: [],
+      battChart: null, pvChart: null,
+
+      // Parameters
+      params: null, ctrlStatus: null,
+
+      // Energy
+      stats: null,
+
+      // Login modal
+      loginOpen:  false,
+      loginUser:  '',
+      loginPass:  '',
+      loginError: '',
+
+      // Edit modal
+      editOpen:  false,
+      editForm:  { battery_capacity: null, temperature_compensation_coefficient: null, voltage_controls: {} },
+      editError: '',
+      vcKeys:    VC_KEYS,
+
+      // ── Init ──
+      init() {
+        this.connectSocket();
+        this.$watch('loginOpen', open => { if (open) this.$nextTick(() => this.$refs.loginUserInput?.focus()); });
+        this.$nextTick(() => this.initCharts());
+      },
+
+      // ── Connection ──
+      connectSocket() {
+        const socket = io();
+        socket.on('connect',    () => this.connected = true);
+        socket.on('disconnect', () => this.connected = false);
+        socket.on('solar_data', d => this.onLiveData(d));
+      },
+
+      onLiveData(d) {
+        this.live = d;
+        const t = Math.floor(Date.now() / 1000);
+        this.chartTimes.push(t);
+        this.chartBatt.push(d.BattPercentage);
+        this.chartPV.push(d.PVPower);
+        if (this.chartTimes.length > CHART_MAX) {
+          this.chartTimes.shift(); this.chartBatt.shift(); this.chartPV.shift();
+        }
+        this.updateCharts();
+      },
+
+      // ── Charts ──
+      initCharts() {
+        const elBatt = this.$refs.chartBatt;
+        const elPV   = this.$refs.chartPV;
+        if (!elBatt || !elPV || typeof uPlot === 'undefined') return;
+
+        const w = elBatt.offsetWidth || 600;
+        this.battChart = new uPlot({ ...chartOpts('#10b981', 0, 100), width: w }, [[], []], elBatt);
+        this.pvChart   = new uPlot({ ...chartOpts('#f59e0b', 0, null), width: w }, [[], []], elPV);
+      },
+
+      updateCharts() {
+        if (this.battChart) this.battChart.setData([this.chartTimes, this.chartBatt]);
+        if (this.pvChart)   this.pvChart.setData([this.chartTimes, this.chartPV]);
+      },
+
+      // ── Auth ──
+      battColor() {
+        if (!this.live) return 'var(--muted)';
+        const p = this.live.BattPercentage;
+        return p < 20 ? 'var(--red)' : p < 40 ? 'var(--accent)' : 'var(--green)';
+      },
+
+      async doLogin() {
+        this.loginError = '';
+        if (!this.loginUser || !this.loginPass) { this.loginError = 'Enter username and password.'; return; }
+        try {
+          const res = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: this.loginUser, password: this.loginPass }),
+          });
+          if (res.ok) {
+            this.authed = true;
+            this.loginOpen = false;
+            this.loginUser = this.loginPass = '';
+          } else {
+            this.loginError = 'Invalid username or password.';
+          }
+        } catch { this.loginError = 'Connection error.'; }
+      },
+
+      async doLogout() {
+        await fetch('/api/logout', { method: 'POST' });
+        this.authed = false;
+      },
+
+      // ── Profile ──
+      async setProfile(profile) {
+        if (!this.authed) { this.loginOpen = true; return; }
+        const routes = { 'performance': '/api/performance-mode', 'balanced': '/api/balanced', 'power-saver': '/api/power-saver-mode' };
+        const res = await fetch(routes[profile], { method: 'POST' });
+        if (res.status === 401) { this.authed = false; this.loginOpen = true; }
+      },
+
+      // ── Tab switch ──
+      switchTab(name) {
+        this.tab = name;
+        if (name === 'parameters' && !this.params)  this.loadParams();
+        if (name === 'energy'     && !this.stats)   this.loadStats();
+      },
+
+      // ── Parameters ──
+      async loadParams() {
+        const [pr, sr] = await Promise.all([
+          fetch('/api/controller/parameters'),
+          fetch('/api/controller/status'),
+        ]);
+        if (pr.ok) this.params     = await pr.json();
+        if (sr.ok) this.ctrlStatus = await sr.json();
+      },
+
+      openEdit() {
+        if (!this.params) return;
+        this.editError = '';
+        this.editForm = {
+          battery_capacity: this.params.battery_capacity,
+          temperature_compensation_coefficient: this.params.temperature_compensation_coefficient,
+          voltage_controls: { ...this.params.voltage_controls },
+        };
+        this.editOpen = true;
+      },
+
+      async saveParams() {
+        this.editError = '';
+        try {
+          const res = await fetch('/api/controller/parameters', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(this.editForm),
+          });
+          if (res.ok) {
+            this.params = await res.json();
+            this.editOpen = false;
+          } else if (res.status === 401) {
+            this.authed = false; this.editOpen = false; this.loginOpen = true;
+          } else {
+            const err = await res.json().catch(() => ({}));
+            this.editError = err.detail || 'Failed to save.';
+          }
+        } catch { this.editError = 'Connection error.'; }
+      },
+
+      async syncRtc() {
+        const res = await fetch('/api/controller/rtc/sync', { method: 'POST' });
+        if (res.status === 401) { this.authed = false; this.loginOpen = true; }
+        else if (res.ok) this.loadParams();
+      },
+
+      // ── Energy ──
+      async loadStats() {
+        const res = await fetch('/api/controller/stats');
+        if (res.ok) this.stats = await res.json();
+      },
+
+      fmt(v) { return v != null ? Number(v).toFixed(2) : '–'; },
+
+    })); // Alpine.data
+  }); // alpine:init
+</script>
+<script defer src="/static/vendor/alpine.min.js"></script>
+</body>
+</html>

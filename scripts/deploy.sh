@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# scripts/deploy.sh
+# Deploys SunBlock on an Ubuntu server on port 3707.
+# Run from the project root: bash scripts/deploy.sh
+
+set -euo pipefail
+
+# ── Colours ──────────────────────────────────────────────────────────────────
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+info()    { echo -e "${CYAN}→${NC} $*"; }
+success() { echo -e "${GREEN}✓${NC} $*"; }
+warn()    { echo -e "${YELLOW}!${NC} $*"; }
+die()     { echo -e "${RED}✗${NC} $*" >&2; exit 1; }
+
+PORT=3707
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEPLOY_USER="$(whoami)"
+VENV="$PROJECT_DIR/.venv"
+SERVICE_NAME="sunblock"
+
+echo ""
+echo -e "${CYAN}╔══════════════════════════════════╗${NC}"
+echo -e "${CYAN}║     SunBlock Deployment Script   ║${NC}"
+echo -e "${CYAN}╚══════════════════════════════════╝${NC}"
+echo ""
+info "Project root : $PROJECT_DIR"
+info "Deploy user  : $DEPLOY_USER"
+info "Port         : $PORT"
+echo ""
+
+# ── Checks ───────────────────────────────────────────────────────────────────
+[[ "$EUID" -eq 0 ]] && die "Do not run as root. Run as the service user with sudo access."
+command -v sudo &>/dev/null || die "sudo not found."
+
+# ── 1. System packages ───────────────────────────────────────────────────────
+info "Installing system packages..."
+sudo apt-get update -qq
+sudo apt-get install -y -qq python3 python3-venv python3-pip curl git
+success "System packages ready."
+
+# ── 2. Python virtual environment ────────────────────────────────────────────
+info "Setting up Python virtual environment..."
+if [[ ! -d "$VENV" ]]; then
+    python3 -m venv "$VENV"
+    success "Virtual environment created."
+else
+    success "Virtual environment already exists, skipping."
+fi
+
+info "Installing Python dependencies..."
+"$VENV/bin/pip" install --quiet --upgrade pip
+"$VENV/bin/pip" install --quiet \
+    fastapi \
+    uvicorn \
+    python-socketio \
+    epevermodbus \
+    python-dotenv \
+    "python-jose[cryptography]" \
+    bcrypt \
+    slowapi \
+    jinja2
+success "Python dependencies installed."
+
+# ── 3. Vendor frontend assets ────────────────────────────────────────────────
+info "Vendoring frontend dependencies..."
+bash "$PROJECT_DIR/scripts/vendor.sh"
+success "Frontend assets vendored."
+
+# ── 4. Configure .env ────────────────────────────────────────────────────────
+ENV_FILE="$PROJECT_DIR/.env"
+
+if [[ -f "$ENV_FILE" ]]; then
+    warn ".env already exists. Skipping interactive config."
+    warn "Edit $ENV_FILE manually if changes are needed."
+else
+    info "Configuring .env..."
+    cp "$PROJECT_DIR/sample.env" "$ENV_FILE"
+
+    # Controller
+    read -rp "  Controller port [/dev/ttyACM0]: " CTRL_PORT
+    CTRL_PORT="${CTRL_PORT:-/dev/ttyACM0}"
+
+    read -rp "  Controller slave ID [1]: " CTRL_SLAVE
+    CTRL_SLAVE="${CTRL_SLAVE:-1}"
+
+    # Data directory
+    DEFAULT_DATA_DIR="/home/$DEPLOY_USER/SunblockData/"
+    read -rp "  Data directory [$DEFAULT_DATA_DIR]: " DATA_DIR
+    DATA_DIR="${DATA_DIR:-$DEFAULT_DATA_DIR}"
+    mkdir -p "$DATA_DIR"
+
+    # Power draw script
+    DEFAULT_SCRIPT="/home/$DEPLOY_USER/power_scripts/powerdraw.sh"
+    read -rp "  Power draw script [$DEFAULT_SCRIPT]: " POWER_SCRIPT
+    POWER_SCRIPT="${POWER_SCRIPT:-$DEFAULT_SCRIPT}"
+
+    # Admin username
+    read -rp "  Admin username [admin]: " ADMIN_USER
+    ADMIN_USER="${ADMIN_USER:-admin}"
+
+    # Admin password (hashed)
+    while true; do
+        read -rsp "  Admin password: " ADMIN_PASS; echo
+        read -rsp "  Confirm password: " ADMIN_PASS2; echo
+        [[ "$ADMIN_PASS" == "$ADMIN_PASS2" ]] && break
+        warn "Passwords do not match. Try again."
+    done
+    ADMIN_HASH=$("$VENV/bin/python3" -c "import bcrypt; print(bcrypt.hashpw(b'$ADMIN_PASS', bcrypt.gensalt()).decode())")
+
+    # Secret key
+    SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+
+    # Write .env
+    cat > "$ENV_FILE" <<EOF
+CONTROLLER_PORT=$CTRL_PORT
+CONTROLLER_SLAVE=$CTRL_SLAVE
+
+DATA_DIRECTORY=$DATA_DIR
+POWER_DRAW_SCRIPT_ADDR=$POWER_SCRIPT
+
+DATA_MAN=true
+READ_INTERVAL=1
+PORT=$PORT
+
+ADMIN_USERNAME=$ADMIN_USER
+ADMIN_PASSWORD_HASH=$ADMIN_HASH
+SECRET_KEY=$SECRET_KEY
+TOKEN_EXPIRE_HOURS=24
+SECURE_COOKIES=false
+EOF
+    chmod 600 "$ENV_FILE"
+    success ".env written and permissions set to 600."
+fi
+
+# ── 5. Passwordless sudo for powerprofilesctl ─────────────────────────────────
+SUDOERS_FILE="/etc/sudoers.d/sunblock"
+if [[ ! -f "$SUDOERS_FILE" ]]; then
+    info "Configuring passwordless sudo for powerprofilesctl..."
+    echo "$DEPLOY_USER ALL=(ALL) NOPASSWD: /usr/bin/powerprofilesctl" \
+        | sudo tee "$SUDOERS_FILE" > /dev/null
+    sudo chmod 440 "$SUDOERS_FILE"
+    success "Sudoers entry written to $SUDOERS_FILE."
+else
+    success "Sudoers entry already exists, skipping."
+fi
+
+# ── 6. systemd service ────────────────────────────────────────────────────────
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+info "Installing systemd service..."
+
+sudo tee "$SERVICE_FILE" > /dev/null <<EOF
+[Unit]
+Description=SunBlock Admin Server
+After=network.target
+
+[Service]
+Type=simple
+User=$DEPLOY_USER
+WorkingDirectory=$PROJECT_DIR
+EnvironmentFile=$ENV_FILE
+ExecStart=$VENV/bin/uvicorn sunblock:socket_app --host 0.0.0.0 --port $PORT
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable "$SERVICE_NAME"
+sudo systemctl restart "$SERVICE_NAME"
+
+sleep 2
+
+if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+    success "Service $SERVICE_NAME is running."
+else
+    die "Service failed to start. Check logs: journalctl -u $SERVICE_NAME -n 50"
+fi
+
+# ── Done ──────────────────────────────────────────────────────────────────────
+echo ""
+echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║           Deployment complete!           ║${NC}"
+echo -e "${GREEN}╚══════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "  Admin panel : ${CYAN}http://$(hostname -I | awk '{print $1}'):$PORT${NC}"
+echo -e "  Service     : ${CYAN}sudo systemctl status $SERVICE_NAME${NC}"
+echo -e "  Logs        : ${CYAN}journalctl -u $SERVICE_NAME -f${NC}"
+echo -e "  Config      : ${CYAN}$ENV_FILE${NC}"
+echo ""
