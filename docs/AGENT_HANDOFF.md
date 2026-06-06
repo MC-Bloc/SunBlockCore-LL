@@ -1,4 +1,4 @@
-# SunBlock — Agent Handoff Document
+# SunBlockCore-LL — Agent Handoff Document
 
 > This document is written for a Claude agent (or any developer) who is picking up this project cold.  
 > Read this before touching any code.
@@ -7,7 +7,7 @@
 
 ## What This Project Is
 
-SunBlock is a real-time solar energy monitoring and admin panel for the SunBlock Project (TAG MC-Bloc, Milieux Institute, Concordia University, Montreal). It:
+SunBlockCore-LL is a real-time solar energy monitoring and admin panel for the SunBlock Project (TAG MC-Bloc, Milieux Institute, Concordia University, Montreal). It:
 
 - Reads telemetry from an Epever MPPT charge controller over RS-485/Modbus
 - Persists readings to SQLite at 1 reading/second

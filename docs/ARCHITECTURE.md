@@ -1,4 +1,4 @@
-# SunBlock — Architecture & Design Decisions
+# SunBlockCore-LL — Architecture & Design Decisions
 
 > Written for The SunBlock Project  
 > TAG MC-Bloc · Milieux Institute · Concordia University · Montreal, Canada  
@@ -25,7 +25,7 @@
 
 ## 1. System Overview
 
-SunBlock is a real-time solar energy monitoring and control system. It reads telemetry from an Epever MPPT charge controller over RS-485/Modbus, persists readings to SQLite, broadcasts live data over Socket.IO to connected browser clients, and exposes a REST API for configuration and control.
+SunBlockCore-LL is a real-time solar energy monitoring and control system. It reads telemetry from an Epever MPPT charge controller over RS-485/Modbus, persists readings to SQLite, broadcasts live data over Socket.IO to connected browser clients, and exposes a REST API for configuration and control.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -34,7 +34,7 @@ SunBlock is a real-time solar energy monitoring and control system. It reads tel
 └────────────────────┬─────────────────────────────────────┘
                      │  HTTP + WebSocket (port 3707)
 ┌────────────────────▼─────────────────────────────────────┐
-│                   SunBlock Server                        │
+│                SunBlockCore-LL Server                    │
 │   FastAPI + python-socketio  (single ASGI process)       │
 │                                                          │
 │   polling_loop ──► hardware.py / simulator.py            │

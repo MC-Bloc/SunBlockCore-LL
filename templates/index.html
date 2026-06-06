@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title x-text="authed ? 'SunBlock Admin' : 'SunBlock'">SunBlock</title>
+  <title x-text="authed ? 'SunBlockCore Admin' : 'SunBlockCore'">SunBlockCore</title>
   {% if admin_mode %}<meta name="referrer" content="no-referrer" />{% endif %}
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -181,7 +181,7 @@
   <!-- Header -->
   <header>
     <h1>
-      ☀ <span x-text="authed ? 'SunBlock Admin' : 'SunBlock'">SunBlock</span>
+      ☀ <span x-text="authed ? 'SunBlockCore Admin' : 'SunBlockCore'">SunBlockCore</span>
       <span x-show="simMode && authed" class="badge badge-sim" title="Simulator mode — no hardware connected">SIM</span>
     </h1>
     <div class="status">
@@ -452,7 +452,7 @@
             Data Directory<span x-show="!dataDirectory"> — required</span>
           </div>
           <div x-show="!dataDirectory" class="feedback-err" style="margin-bottom:12px">
-            Set a directory path where SunBlock will store the database and logs.
+            Set a directory path where SunBlockCore will store the database and logs.
             The directory will be created automatically.
           </div>
           <div x-show="settingsMsg && settingsMsgDataDir" :class="settingsMsgOk ? 'feedback-ok' : 'feedback-err'" x-text="settingsMsg"></div>

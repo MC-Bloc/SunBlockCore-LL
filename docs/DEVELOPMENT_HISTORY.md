@@ -1,4 +1,4 @@
-# SunBlock — Development History
+# SunBlockCore-LL — Development History
 
 > Chronological record of all decisions, changes, and reasoning across the development sessions.
 

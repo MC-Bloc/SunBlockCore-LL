@@ -1,4 +1,4 @@
-# SunBlock — Security & Known Issues
+# SunBlockCore-LL — Security & Known Issues
 
 ---
 
@@ -23,7 +23,7 @@
 
 ## 1. Security Architecture Summary
 
-SunBlock is designed as an **internal tool** exposed on a local network or behind a reverse proxy. It is not intended to be exposed directly to the public internet without additional hardening (firewall, VPN, or TLS termination proxy).
+SunBlockCore-LL is designed as an **internal tool** exposed on a local network or behind a reverse proxy. It is not intended to be exposed directly to the public internet without additional hardening (firewall, VPN, or TLS termination proxy).
 
 Current controls:
 
@@ -80,7 +80,7 @@ There is exactly one admin account. The username is set via `ADMIN_USERNAME` (de
 
 ### TLS / HTTPS
 
-TLS is **not handled by SunBlock itself**. For production:
+TLS is **not handled by SunBlockCore-LL itself**. For production:
 - Terminate TLS at a reverse proxy (nginx, Caddy)
 - Set `SECURE_COOKIES=true` in `.env` so cookies carry the `Secure` flag
 
@@ -326,7 +326,7 @@ python3 -c "import secrets; print(secrets.token_hex(32))"
 
 **Description:** CVE-2024-33663 and CVE-2024-33664 describe an algorithm-confusion attack in `python-jose` that allows an attacker to forge tokens by confusing an RSA public key with an HMAC symmetric key.
 
-**SunBlock is not affected.** The only algorithm used here is `HS256` (symmetric HMAC-SHA256). There are no RSA/EC key pairs in the codebase and `python-jose` is never called with an asymmetric key object. The vulnerability requires the server to accept a choice of algorithm from the client, which `python-jose`'s `decode()` call with an explicit `algorithms=["HS256"]` list prevents.
+**SunBlockCore-LL is not affected.** The only algorithm used here is `HS256` (symmetric HMAC-SHA256). There are no RSA/EC key pairs in the codebase and `python-jose` is never called with an asymmetric key object. The vulnerability requires the server to accept a choice of algorithm from the client, which `python-jose`'s `decode()` call with an explicit `algorithms=["HS256"]` list prevents.
 
 **Status:** Informational only. No action required.
 
@@ -334,9 +334,9 @@ python3 -c "import secrets; print(secrets.token_hex(32))"
 
 ### SEC-007 — Python 3.9 CVE backlog in transitive dependencies *(Low)*
 
-**Description:** Some upstream packages (notably `python-dotenv` and `starlette`, which is a transitive dependency of `fastapi`) have released versions that patch low-severity CVEs but those versions require Python ≥ 3.10. Because SunBlock targets Raspberry Pi OS (Bullseye/Bookworm) and Ubuntu 22.04 LTS, which ship Python 3.9–3.10, pinning to the latest version may not always be possible across all target platforms.
+**Description:** Some upstream packages (notably `python-dotenv` and `starlette`, which is a transitive dependency of `fastapi`) have released versions that patch low-severity CVEs but those versions require Python ≥ 3.10. Because SunBlockCore-LL targets Raspberry Pi OS (Bullseye/Bookworm) and Ubuntu 22.04 LTS, which ship Python 3.9–3.10, pinning to the latest version may not always be possible across all target platforms.
 
-**Mitigation:** Run on a platform with Python ≥ 3.10 when possible. Keep dependencies updated with `pip install -r requirements.txt --upgrade`. The reported CVEs in `python-dotenv` and `starlette` at the time of writing are informational or low severity (output truncation, header parsing edge cases) and not exploitable in SunBlock's threat model (trusted local network, no untrusted `.env` loading).
+**Mitigation:** Run on a platform with Python ≥ 3.10 when possible. Keep dependencies updated with `pip install -r requirements.txt --upgrade`. The reported CVEs in `python-dotenv` and `starlette` at the time of writing are informational or low severity (output truncation, header parsing edge cases) and not exploitable in SunBlockCore-LL's threat model (trusted local network, no untrusted `.env` loading).
 
 **Status:** Known limitation. Monitor `pip-audit` output on each deployment.
 
@@ -403,7 +403,7 @@ The audit log is a plain text file. A compromised admin account could truncate o
 
 ## 12. Hardening Checklist for Production
 
-Before exposing SunBlock outside a trusted local network:
+Before exposing SunBlockCore-LL outside a trusted local network:
 
 - [ ] Replace `SECRET_KEY` with a cryptographically random 32-byte hex value
 - [ ] Generate a strong admin password and set `ADMIN_PASSWORD_HASH` in `.env`

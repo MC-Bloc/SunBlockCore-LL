@@ -1,5 +1,5 @@
 """
-Hardware-free simulator for SunBlock.
+Hardware-free simulator for SunBlockCore-LL.
 
 Generates realistic solar readings using hourly baselines derived from
 1.28 M rows of real deployment data (2025-05-11 → 2025-05-29,

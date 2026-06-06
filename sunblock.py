@@ -1,5 +1,5 @@
 '''
-SunBlock — unified solar monitoring + API server
+SunBlockCore-LL — unified solar monitoring + API server
 
 Written by M. Shahrom Ali (github.com/estineali)
 for The SunBlock Project

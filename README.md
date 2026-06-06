@@ -1,4 +1,4 @@
-# SunBlock
+# SunBlockCore-LL
 
 Real-time solar energy monitoring and control system for the SunBlock Project.
 
@@ -9,12 +9,12 @@ https://github.com/MC-Bloc/SunBlock
 
 ## Overview
 
-SunBlock reads telemetry from an Epever MPPT charge controller over RS-485/Modbus, persists every reading to SQLite, and streams live data to a browser-based admin panel via Socket.IO. A built-in simulator lets you run and develop the system without any hardware attached.
+SunBlockCore-LL reads telemetry from an Epever MPPT charge controller over RS-485/Modbus, persists every reading to SQLite, and streams live data to a browser-based admin panel via Socket.IO. A built-in simulator lets you run and develop the system without any hardware attached.
 
 ```
 Browser (Alpine.js SPA)
    ↕  HTTP + WebSocket
-SunBlock Server (FastAPI + python-socketio)
+SunBlockCore-LL Server (FastAPI + python-socketio)
    ↕  RS-485 / Modbus RTU
 Epever MPPT Charge Controller
 ```

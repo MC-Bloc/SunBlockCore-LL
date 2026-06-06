@@ -1,12 +1,12 @@
-# SunBlock Deployment Guide
+# SunBlockCore-LL Deployment Guide
 
 ## Automated deployment
 
 For a fresh Ubuntu server, the deploy script handles everything — dependencies, venv, vendoring, `.env` setup (including generating a random `ADMIN_PATH`), systemd service, and sudoers config:
 
 ```bash
-git clone https://github.com/MC-Bloc/SunBlock.git
-cd SunBlock
+git clone https://github.com/MC-Bloc/SunBlockCore-LL.git
+cd SunBlockCore-LL
 bash scripts/deploy.sh
 ```
 
@@ -33,8 +33,8 @@ sudo dmesg | tail -5   # look for ttyACM0 or similar
 ## 1. Clone & Install
 
 ```bash
-git clone https://github.com/MC-Bloc/SunBlock.git
-cd SunBlock
+git clone https://github.com/MC-Bloc/SunBlockCore-LL.git
+cd SunBlockCore-LL
 
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
@@ -125,15 +125,15 @@ sudo nano /etc/systemd/system/sunblock.service
 
 ```ini
 [Unit]
-Description=SunBlock Admin Server
+Description=SunBlockCore-LL Admin Server
 After=network.target
 
 [Service]
 Type=simple
 User=YOUR_USER
-WorkingDirectory=/home/YOUR_USER/SunBlock
-EnvironmentFile=/home/YOUR_USER/SunBlock/.env
-ExecStart=/home/YOUR_USER/SunBlock/.venv/bin/uvicorn sunblock:socket_app --host 0.0.0.0 --port 3707
+WorkingDirectory=/home/YOUR_USER/SunBlockCore-LL
+EnvironmentFile=/home/YOUR_USER/SunBlockCore-LL/.env
+ExecStart=/home/YOUR_USER/SunBlockCore-LL/.venv/bin/uvicorn sunblock:socket_app --host 0.0.0.0 --port 3707
 Restart=on-failure
 RestartSec=5
 
@@ -233,7 +233,7 @@ sudo systemctl restart sunblock
 Protect files that contain secrets or sensitive operational data:
 
 ```bash
-chmod 600 /home/YOUR_USER/SunBlock/.env
+chmod 600 /home/YOUR_USER/SunBlockCore-LL/.env
 chmod 600 /home/YOUR_USER/SunblockData/sunblock_settings.db
 chmod 600 /home/YOUR_USER/SunblockData/SunBlockAdminAudit.txt
 ```
@@ -243,7 +243,7 @@ chmod 600 /home/YOUR_USER/SunblockData/SunBlockAdminAudit.txt
 ## Updating
 
 ```bash
-cd /home/YOUR_USER/SunBlock
+cd /home/YOUR_USER/SunBlockCore-LL
 git pull
 .venv/bin/pip install -r requirements.txt
 bash scripts/vendor.sh

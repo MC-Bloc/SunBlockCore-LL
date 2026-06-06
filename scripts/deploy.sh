@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/deploy.sh
-# Deploys SunBlock on an Ubuntu server on port 3707.
+# Deploys SunBlockCore-LL on an Ubuntu server on port 3707.
 # Run from the project root: bash scripts/deploy.sh
 
 set -euo pipefail
@@ -19,9 +19,9 @@ VENV="$PROJECT_DIR/.venv"
 SERVICE_NAME="sunblock"
 
 echo ""
-echo -e "${CYAN}╔══════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     SunBlock Deployment Script   ║${NC}"
-echo -e "${CYAN}╚══════════════════════════════════╝${NC}"
+echo -e "${CYAN}╔══════════════════════════════════════╗${NC}"
+echo -e "${CYAN}║  SunBlockCore-LL Deployment Script   ║${NC}"
+echo -e "${CYAN}╚══════════════════════════════════════╝${NC}"
 echo ""
 info "Project root : $PROJECT_DIR"
 info "Deploy user  : $DEPLOY_USER"
@@ -156,7 +156,7 @@ info "Installing systemd service..."
 
 sudo tee "$SERVICE_FILE" > /dev/null <<EOF
 [Unit]
-Description=SunBlock Admin Server
+Description=SunBlockCore-LL Admin Server
 After=network.target
 
 [Service]

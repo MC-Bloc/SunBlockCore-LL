@@ -1,4 +1,4 @@
-# SunBlock — User Stories
+# SunBlockCore-LL — User Stories
 
 > Covers all implemented features as of the current codebase.  
 > Format: As a [role], I want to [action], so that [benefit].
@@ -12,7 +12,7 @@
 | **Viewer** | Anyone with network access to the admin panel. Can see live data and history. Cannot change anything. |
 | **Admin** | Authenticated operator. Can modify settings, parameters, and power profiles. |
 | **Operator** | Person deploying or maintaining the server. Interacts via `.env`, CLI, and deployment scripts. |
-| **Developer** | Person building or extending SunBlock. |
+| **Developer** | Person building or extending SunBlockCore-LL. |
 
 ---
 
@@ -184,7 +184,7 @@ As an **Operator**, I want a `sample.env` committed to the repository that docum
 As a **Developer** building an external dashboard, I want to connect a Socket.IO client to the server and listen for `solar_data` events, so that I can receive live readings in any environment without polling REST.
 
 **US-044**  
-As a **Developer** building an external tool, I want to query `GET /api/data` for the current reading as plain JSON, so that I can integrate SunBlock into other systems with a simple HTTP call.
+As a **Developer** building an external tool, I want to query `GET /api/data` for the current reading as plain JSON, so that I can integrate SunBlockCore-LL into other systems with a simple HTTP call.
 
 **US-045**  
 As a **Developer** building an analysis tool, I want to paginate through historical readings via `GET /api/data/history`, so that I can export or process the full dataset programmatically.
