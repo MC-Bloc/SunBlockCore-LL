@@ -4,7 +4,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title x-text="authed ? 'SunBlock Admin' : 'SunBlock'">SunBlock</title>
-  <link rel="stylesheet" href="/static/vendor/uplot.min.css" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -53,7 +52,7 @@
     /* Chart container */
     .chart-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; margin-bottom: 20px; }
     .chart-wrap .card-title { margin-bottom: 12px; }
-    .chart-wrap .uplot { width: 100% !important; }
+    .chart-wrap .plotly-chart { width: 100%; }
 
     /* Profile */
     .profile-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; margin-bottom: 20px; }
@@ -121,8 +120,6 @@
     .btn-secondary { padding: 8px 14px; background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-size: 0.88rem; cursor: pointer; }
     .btn-secondary:hover { border-color: var(--text); color: var(--text); }
 
-    /* uPlot theme overrides */
-    .uplot .u-legend { display: none; }
 
     /* Settings panel */
     .settings-section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; margin-bottom: 16px; }
@@ -270,11 +267,11 @@
     <!-- Charts — always visible -->
     <div class="chart-wrap">
       <div class="card-title">Battery % — last 5 min</div>
-      <div x-ref="chartBatt"></div>
+      <div id="chart-batt" class="plotly-chart"></div>
     </div>
     <div class="chart-wrap">
       <div class="card-title">PV Power (W) — last 5 min</div>
-      <div x-ref="chartPV"></div>
+      <div id="chart-pv" class="plotly-chart"></div>
     </div>
   </div>
 
@@ -728,7 +725,7 @@
 </div><!-- end x-data -->
 
 <script src="/static/vendor/socket.io.min.js"></script>
-<script src="/static/vendor/uplot.min.js"></script>
+<script src="/static/vendor/plotly.min.js"></script>
 <script>
   const VC_KEYS = [
     'over_voltage_disconnect_voltage','charging_limit_voltage','over_voltage_reconnect_voltage',
@@ -737,26 +734,44 @@
     'under_voltage_warning_voltage','low_voltage_disconnect_voltage','discharging_limit_voltage',
   ];
 
-  const CHART_MAX  = 300; // 5 minutes at 1s
-  const CHART_H    = 130;
+  const CHART_MAX = 300; // 5 minutes at 1s
+  const CHART_H   = 160;
 
-  function chartOpts(color, yMin, yMax) {
-    return {
-      height: CHART_H,
-      cursor: { show: false },
-      legend: { show: false },
-      series: [
-        {},
-        { stroke: color, width: 2, fill: color + '22', spanGaps: true },
-      ],
-      axes: [
-        { stroke: '#64748b', grid: { stroke: '#2a2d3a' }, ticks: { stroke: '#2a2d3a' },
-          values: (_, ts) => ts.map(t => new Date(t * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })) },
-        { stroke: '#64748b', grid: { stroke: '#2a2d3a' }, ticks: { stroke: '#2a2d3a' }, size: 44 },
-      ],
-      scales: { x: { time: true }, y: { min: yMin, max: yMax } },
-    };
-  }
+  const PLOTLY_LAYOUT = (yTitle, yRange) => ({
+    height: CHART_H,
+    margin: { t: 8, r: 16, b: 40, l: 52 },
+    paper_bgcolor: 'transparent',
+    plot_bgcolor:  'transparent',
+    font:  { color: '#64748b', size: 11 },
+    xaxis: {
+      type: 'date',
+      color: '#64748b',
+      gridcolor: '#2a2d3a',
+      tickcolor: '#2a2d3a',
+      linecolor: '#2a2d3a',
+      tickfont:  { size: 10 },
+      showspikes: true, spikecolor: '#64748b', spikemode: 'across', spikesnap: 'cursor',
+    },
+    yaxis: {
+      title: { text: yTitle, font: { size: 10 }, standoff: 4 },
+      color: '#64748b',
+      gridcolor: '#2a2d3a',
+      tickcolor: '#2a2d3a',
+      linecolor: '#2a2d3a',
+      tickfont:  { size: 10 },
+      ...(yRange ? { range: yRange } : {}),
+    },
+    hoverlabel: { bgcolor: '#1a1d27', bordercolor: '#2a2d3a', font: { color: '#e2e8f0', size: 11 } },
+    hovermode: 'x unified',
+    showlegend: false,
+  });
+
+  const PLOTLY_CONFIG = {
+    displaylogo: false,
+    responsive: true,
+    modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'],
+    toImageButtonOptions: { format: 'png', scale: 2 },
+  };
 
   document.addEventListener('alpine:init', () => {
     Alpine.data('sunblock', (initialAuth, initialSimMode, initialEnvDefaults, initialDataDir, initialAdminMode) => ({
@@ -774,7 +789,7 @@
 
       // Charts
       chartTimes: [], chartBatt: [], chartPV: [],
-      battChart: null, pvChart: null,
+      chartsReady: false,
 
       // Parameters
       params: null, ctrlStatus: null,
@@ -840,18 +855,39 @@
 
       // ── Charts ──
       initCharts() {
-        const elBatt = this.$refs.chartBatt;
-        const elPV   = this.$refs.chartPV;
-        if (!elBatt || !elPV || typeof uPlot === 'undefined') return;
+        if (typeof Plotly === 'undefined') return;
 
-        const w = elBatt.offsetWidth || 600;
-        this.battChart = new uPlot({ ...chartOpts('#10b981', 0, 100), width: w }, [[], []], elBatt);
-        this.pvChart   = new uPlot({ ...chartOpts('#f59e0b', 0, null), width: w }, [[], []], elPV);
+        const battTrace = {
+          x: [], y: [],
+          type: 'scatter', mode: 'lines',
+          line: { color: '#10b981', width: 2 },
+          fill: 'tozeroy', fillcolor: 'rgba(16,185,129,0.08)',
+          hovertemplate: '%{y:.1f}%<extra></extra>',
+        };
+        const pvTrace = {
+          x: [], y: [],
+          type: 'scatter', mode: 'lines',
+          line: { color: '#f59e0b', width: 2 },
+          fill: 'tozeroy', fillcolor: 'rgba(245,158,11,0.08)',
+          hovertemplate: '%{y:.1f} W<extra></extra>',
+        };
+
+        Plotly.newPlot('chart-batt', [battTrace], PLOTLY_LAYOUT('%', [0, 100]), PLOTLY_CONFIG);
+        Plotly.newPlot('chart-pv',   [pvTrace],   PLOTLY_LAYOUT('W'),           PLOTLY_CONFIG);
+        this.chartsReady = true;
       },
 
       updateCharts() {
-        if (this.battChart) this.battChart.setData([this.chartTimes, this.chartBatt]);
-        if (this.pvChart)   this.pvChart.setData([this.chartTimes, this.chartPV]);
+        if (!this.chartsReady) return;
+        const times = this.chartTimes.map(t => new Date(t * 1000));
+        Plotly.extendTraces('chart-batt', { x: [[times.at(-1)]], y: [[this.chartBatt.at(-1)]] }, [0]);
+        Plotly.extendTraces('chart-pv',   { x: [[times.at(-1)]], y: [[this.chartPV.at(-1)]]   }, [0]);
+        // Trim to rolling window
+        if (this.chartTimes.length > CHART_MAX) {
+          const keep = { x: [times.slice(-CHART_MAX)], y: [this.chartBatt.slice(-CHART_MAX)] };
+          Plotly.restyle('chart-batt', keep, [0]);
+          Plotly.restyle('chart-pv',   { x: [times.slice(-CHART_MAX)], y: [this.chartPV.slice(-CHART_MAX)] }, [0]);
+        }
       },
 
       // ── Auth ──
