@@ -560,6 +560,16 @@
         <span x-text="histLoading ? 'Loading…' : 'Load'"></span>
       </button>
       <button class="btn btn-action" x-show="history" @click="loadHistory(history.offset)">↻</button>
+      <a x-show="authed && dataDirectory"
+         href="/api/data/download"
+         download="SunBlockCore-LL.db"
+         class="btn btn-action"
+         style="text-decoration:none"
+         title="Download full SQLite database">⬇ Download DB</a>
+      <span x-show="!authed && dataDirectory"
+            class="btn btn-action"
+            style="opacity:0.45;cursor:not-allowed"
+            title="Login to download">⬇ Download DB</span>
     </div>
 
     <!-- Summary + pagination -->

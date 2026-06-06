@@ -39,7 +39,7 @@ import bcrypt as _bcrypt
 import socketio
 from epevermodbus.driver import EpeverChargeController
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from slowapi import _rate_limit_exceeded_handler
@@ -243,6 +243,21 @@ async def get_data_history(
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None, query_history, limit, offset, from_ts, to_ts, order
+    )
+
+
+@app.get("/api/data/download")
+async def download_db(user: str = Depends(verify_session)):
+    """Download the raw SQLite telemetry database file (auth required)."""
+    if not config.DB_NAME or not os.path.isfile(config.DB_NAME):
+        raise HTTPException(
+            status_code=404,
+            detail="Database file not found. DATA_DIRECTORY may not be configured or data collection may be disabled.",
+        )
+    return FileResponse(
+        path=config.DB_NAME,
+        media_type="application/octet-stream",
+        filename="SunBlockCore-LL.db",
     )
 
 
