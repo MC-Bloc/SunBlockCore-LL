@@ -39,7 +39,8 @@ import bcrypt as _bcrypt
 import socketio
 from epevermodbus.driver import EpeverChargeController
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from slowapi import _rate_limit_exceeded_handler
@@ -173,6 +174,16 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.mount("/static", StaticFiles(directory="public"), name="static")
 
 socket_app = socketio.ASGIApp(sio, app)
+
+
+# ── Error handlers ────────────────────────────────────────────────────────────
+
+@app.exception_handler(404)
+async def not_found(request: Request, exc: HTTPException):
+    # Return JSON for API paths, HTML for everything else
+    if request.url.path.startswith("/api/") or request.url.path.startswith("/socket.io/"):
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
+    return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
