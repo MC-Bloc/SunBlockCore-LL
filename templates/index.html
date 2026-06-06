@@ -101,6 +101,7 @@
     .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
     .badge-ok   { background: rgba(16,185,129,0.15); color: var(--green); }
     .badge-err  { background: rgba(239,68,68,0.15);  color: var(--red); }
+    .badge-sim  { background: rgba(139,92,246,0.18); color: #a78bfa; letter-spacing: 0.05em; }
 
     /* Modals */
     .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 200; align-items: flex-start; justify-content: center; padding: 40px 16px; overflow-y: auto; }
@@ -129,11 +130,11 @@
 </head>
 <body>
 
-<div x-data="sunblock({{ is_authenticated | tojson }})">
+<div x-data="sunblock({{ is_authenticated | tojson }}, {{ sim_mode | tojson }})">
 
   <!-- Header -->
   <header>
-    <h1>☀ SunBlock Admin</h1>
+    <h1>☀ SunBlock Admin <span x-show="simMode" class="badge badge-sim" title="Simulator mode — no hardware connected">SIM</span></h1>
     <div class="status">
       <div class="dot" :style="connected ? 'background:var(--green)' : 'background:var(--red)'"></div>
       <span x-text="connected ? 'Connected' : 'Disconnected'">Connecting…</span>
@@ -427,12 +428,13 @@
   }
 
   document.addEventListener('alpine:init', () => {
-    Alpine.data('sunblock', (initialAuth) => ({
+    Alpine.data('sunblock', (initialAuth, initialSimMode) => ({
 
       // ── State ──
       tab:       'live',
       connected: false,
       authed:    initialAuth,
+      simMode:   initialSimMode,
       live:      null,
 
       // Charts
