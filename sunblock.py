@@ -33,6 +33,7 @@ import asyncio
 import csv
 import io
 import os
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
@@ -135,7 +136,7 @@ async def lifespan(app: FastAPI):
             "(e.g. ADMIN_PATH=xK9mP3qR7) then restart."
         )
     else:
-        await sunblock_log(f"Admin login available at /{config.ADMIN_PATH.lstrip('/')}")
+        await sunblock_log("Admin route registered (path configured in ADMIN_PATH).")
 
     if config.SIM_MODE:
         await sunblock_log("SIM_MODE=true — skipping hardware init, using simulator.")
@@ -209,11 +210,40 @@ async def not_found(request: Request, exc: HTTPException):
     return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _page_response(template: str, context: dict) -> "TemplateResponse":
+    """
+    Render an HTML page with a per-request CSP nonce.
+
+    The nonce is injected into the template context so Jinja2 can stamp it on
+    the inline <script> block.  Using a nonce rather than 'unsafe-inline' means
+    only the script we wrote (with the correct nonce attribute) will execute —
+    injected payloads won't have it.
+
+    We still need 'unsafe-eval' because Alpine.js evaluates x-data/x-on
+    expressions with new Function() internally.
+    """
+    nonce = secrets.token_urlsafe(16)
+    csp = (
+        f"default-src 'self'; "
+        f"script-src 'self' 'nonce-{nonce}' 'unsafe-eval'; "
+        f"style-src 'self' 'unsafe-inline'; "
+        f"img-src 'self' data: blob:; "
+        f"connect-src 'self'; "
+        f"frame-ancestors 'none'"
+    )
+    context["csp_nonce"] = nonce
+    response = templates.TemplateResponse(template, context)
+    response.headers["Content-Security-Policy"] = csp
+    return response
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/")
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {
+    return _page_response("index.html", {
         "request":          request,
         "is_authenticated": check_session(request),
         "sim_mode":         config.SIM_MODE,
@@ -226,7 +256,7 @@ async def index(request: Request):
 async def _admin_page(request: Request):
     """Dedicated admin entry-point — auto-opens login modal (or settings if already authed).
     Registered at the path set by ADMIN_PATH in .env; not exposed at any predictable URL."""
-    return templates.TemplateResponse("index.html", {
+    return _page_response("index.html", {
         "request":          request,
         "is_authenticated": check_session(request),
         "sim_mode":         config.SIM_MODE,
@@ -290,6 +320,7 @@ async def get_data_history(
     from_ts: Optional[str]      = Query(default=None, alias="from"),
     to_ts:   Optional[str]      = Query(default=None, alias="to"),
     order:   str                = "desc",
+    user:    str                = Depends(verify_session),
 ):
     """
     Paginated history of solar readings from the SQLite database.
@@ -318,7 +349,7 @@ def _db_guard():
         )
 
 @app.get("/api/data/visualize/fields")
-async def get_viz_fields():
+async def get_viz_fields(user: str = Depends(verify_session)):
     """Return the list of plottable fields with label and unit metadata."""
     return VIZ_FIELD_META
 
@@ -330,6 +361,7 @@ async def get_visualize(
     sample:        int           = Query(default=1,  ge=1, le=3600),
     smooth:        int           = Query(default=0,  ge=0, le=300),
     filter_spikes: bool          = Query(default=True),
+    user:          str           = Depends(verify_session),
 ):
     """
     Time-series data for the Visualize tab.

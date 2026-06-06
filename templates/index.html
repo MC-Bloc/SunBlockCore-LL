@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title x-text="authed ? 'SunBlock Admin' : 'SunBlock'">SunBlock</title>
+  {% if admin_mode %}<meta name="referrer" content="no-referrer" />{% endif %}
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -852,7 +853,7 @@
 
 <script src="/static/vendor/socket.io.min.js"></script>
 <script src="/static/vendor/plotly.min.js"></script>
-<script>
+<script nonce="{{ csp_nonce }}">
   const VC_KEYS = [
     'over_voltage_disconnect_voltage','charging_limit_voltage','over_voltage_reconnect_voltage',
     'equalize_charging_voltage','boost_charging_voltage','float_charging_voltage',
@@ -1176,6 +1177,7 @@
           const res  = await fetch('/api/data/visualize?' + p);
           const data = await res.json();
 
+          if (res.status === 401) { this.authed = false; this.tab = 'live'; return; }
           if (!res.ok) { this.vizError = data.detail || 'Failed to load data.'; return; }
           if (!data.timestamps.length) { this.vizError = 'No data found for this range.'; return; }
 
@@ -1413,6 +1415,7 @@
           if (this.histFilter.from) p.set('from', this.histFilter.from);
           if (this.histFilter.to)   p.set('to',   this.histFilter.to);
           const res = await fetch('/api/data/history?' + p);
+          if (res.status === 401) { this.authed = false; this.tab = 'live'; return; }
           if (res.ok) this.history = await res.json();
         } catch { /* swallow — server down */ }
         finally  { this.histLoading = false; }
