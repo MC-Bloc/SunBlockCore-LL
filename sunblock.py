@@ -117,6 +117,15 @@ async def lifespan(app: FastAPI):
             "Run scripts/gen_password_hash.py and set it in .env. Login is disabled."
         )
 
+    if not config.ADMIN_PATH:
+        await sunblock_log(
+            "WARNING: ADMIN_PATH is not set. "
+            "The admin login page is unreachable. Set ADMIN_PATH to a secret slug in .env "
+            "(e.g. ADMIN_PATH=xK9mP3qR7) then restart."
+        )
+    else:
+        await sunblock_log(f"Admin login available at /{config.ADMIN_PATH.lstrip('/')}")
+
     if config.SIM_MODE:
         await sunblock_log("SIM_MODE=true — skipping hardware init, using simulator.")
     else:
@@ -176,7 +185,25 @@ async def index(request: Request):
         "sim_mode":         config.SIM_MODE,
         "env_defaults":     config.ENV_DEFAULTS,
         "data_directory":   config.DATA_DIRECTORY or "",
+        "admin_mode":       False,
     })
+
+async def _admin_page(request: Request):
+    """Dedicated admin entry-point — auto-opens login modal (or settings if already authed).
+    Registered at the path set by ADMIN_PATH in .env; not exposed at any predictable URL."""
+    return templates.TemplateResponse("index.html", {
+        "request":          request,
+        "is_authenticated": check_session(request),
+        "sim_mode":         config.SIM_MODE,
+        "env_defaults":     config.ENV_DEFAULTS,
+        "data_directory":   config.DATA_DIRECTORY or "",
+        "admin_mode":       True,
+    })
+
+# Register the admin route only if ADMIN_PATH is configured.
+if config.ADMIN_PATH:
+    _path = "/" + config.ADMIN_PATH.lstrip("/")
+    app.add_api_route(_path, _admin_page, methods=["GET"], include_in_schema=False)
 
 @app.get("/api/mode")
 async def get_mode():

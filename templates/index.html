@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SunBlock Admin</title>
+  <title x-text="authed ? 'SunBlock Admin' : 'SunBlock'">SunBlock</title>
   <link rel="stylesheet" href="/static/vendor/uplot.min.css" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -54,9 +54,6 @@
     .chart-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; margin-bottom: 20px; }
     .chart-wrap .card-title { margin-bottom: 12px; }
     .chart-wrap .uplot { width: 100% !important; }
-
-    /* Auth bar */
-    .auth-bar { display: flex; justify-content: space-between; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 11px 16px; margin-bottom: 20px; font-size: 0.82rem; }
 
     /* Profile */
     .profile-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; margin-bottom: 20px; }
@@ -157,6 +154,9 @@
     .feedback-ok  { background: rgba(16,185,129,0.12); color: var(--green); border: 1px solid rgba(16,185,129,0.25); border-radius: 6px; padding: 8px 14px; font-size: 0.82rem; margin-bottom: 14px; }
     .feedback-err { background: rgba(239,68,68,0.12);  color: var(--red);   border: 1px solid rgba(239,68,68,0.25);  border-radius: 6px; padding: 8px 14px; font-size: 0.82rem; margin-bottom: 14px; }
 
+    /* Admin header bar (logout) */
+    .admin-bar { display: flex; justify-content: flex-end; align-items: center; margin-bottom: 20px; gap: 8px; font-size: 0.82rem; color: var(--muted); }
+
     /* History table */
     .hist-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
     .hist-input   { padding: 6px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.84rem; outline: none; }
@@ -178,57 +178,66 @@
 </head>
 <body>
 
-<div x-data='sunblock({{ is_authenticated | tojson }}, {{ sim_mode | tojson }}, {{ env_defaults | tojson }}, {{ data_directory | tojson }})'>
+<div x-data='sunblock({{ is_authenticated | tojson }}, {{ sim_mode | tojson }}, {{ env_defaults | tojson }}, {{ data_directory | tojson }}, {{ admin_mode | tojson }})'>
 
   <!-- Header -->
   <header>
-    <h1>☀ SunBlock Admin <span x-show="simMode" class="badge badge-sim" title="Simulator mode — no hardware connected">SIM</span></h1>
+    <h1>
+      ☀ <span x-text="authed ? 'SunBlock Admin' : 'SunBlock'">SunBlock</span>
+      <span x-show="simMode && authed" class="badge badge-sim" title="Simulator mode — no hardware connected">SIM</span>
+    </h1>
     <div class="status">
       <div class="dot" :style="connected ? 'background:var(--green)' : 'background:var(--red)'"></div>
       <span x-text="connected ? 'Connected' : 'Disconnected'">Connecting…</span>
     </div>
   </header>
 
-  <!-- Tabs -->
+  <!-- Tabs — admin-only tabs hidden when not logged in -->
   <nav class="tabs">
     <div class="tab" :class="tab === 'live'       && 'active'" @click="tab = 'live'">Live</div>
-    <div class="tab" :class="tab === 'parameters' && 'active'" @click="switchTab('parameters')">Parameters</div>
-    <div class="tab" :class="tab === 'energy'     && 'active'" @click="switchTab('energy')">Energy</div>
-    <div class="tab" :class="tab === 'settings'   && 'active'" @click="switchTab('settings')">Settings</div>
-    <div class="tab" :class="tab === 'history'    && 'active'" @click="switchTab('history')">History</div>
+    <template x-if="authed">
+      <div class="tab" :class="tab === 'parameters' && 'active'" @click="switchTab('parameters')">Parameters</div>
+    </template>
+    <template x-if="authed">
+      <div class="tab" :class="tab === 'energy'     && 'active'" @click="switchTab('energy')">Energy</div>
+    </template>
+    <template x-if="authed">
+      <div class="tab" :class="tab === 'settings'   && 'active'" @click="switchTab('settings')">Settings</div>
+    </template>
+    <template x-if="authed">
+      <div class="tab" :class="tab === 'history'    && 'active'" @click="switchTab('history')">History</div>
+    </template>
   </nav>
 
   <!-- ══ LIVE ══ -->
   <div class="panel" x-show="tab === 'live'">
 
-    <!-- Data directory not configured warning -->
-    <div class="setup-banner" x-show="!dataDirectory">
+    <!-- Admin toolbar (logout) — only visible when logged in -->
+    <div class="admin-bar" x-show="authed">
+      <span style="color:var(--green)">🔓 Logged in</span>
+      <button class="btn btn-muted" @click="doLogout()">Logout</button>
+    </div>
+
+    <!-- Data directory warning — admin-only -->
+    <div class="setup-banner" x-show="authed && !dataDirectory">
       ⚠ Data directory is not set — data collection and history are disabled.
       <a @click="switchTab('settings')">Configure in Settings →</a>
     </div>
 
-    <div class="auth-bar">
-      <span :class="authed ? 'color: var(--green)' : ''" x-text="authed ? '🔓 Logged in' : '🔒 Not logged in'"></span>
-      <div style="display:flex;gap:8px">
-        <button class="btn btn-accent"  x-show="!authed" @click="loginOpen = true">Login</button>
-        <button class="btn btn-muted"   x-show="authed"  @click="doLogout()">Logout</button>
-      </div>
-    </div>
-
-    <!-- Power profile -->
-    <div class="profile-card">
+    <!-- Power profile — admin-only -->
+    <div class="profile-card" x-show="authed">
       <div class="profile-header">
         <span class="card-title" style="margin:0">Power Profile</span>
         <span x-text="live ? live.PowerProfile : '–'" style="font-size:0.85rem;color:var(--muted)"></span>
       </div>
       <div class="profile-btns">
-        <button class="profile-btn" :class="live && live.PowerProfile === 'performance' && 'active'" :disabled="!authed" @click="setProfile('performance')">Performance</button>
-        <button class="profile-btn" :class="live && live.PowerProfile === 'balanced'    && 'active'" :disabled="!authed" @click="setProfile('balanced')">Balanced</button>
-        <button class="profile-btn" :class="live && live.PowerProfile === 'power-saver' && 'active'" :disabled="!authed" @click="setProfile('power-saver')">Power Saver</button>
+        <button class="profile-btn" :class="live && live.PowerProfile === 'performance' && 'active'" @click="setProfile('performance')">Performance</button>
+        <button class="profile-btn" :class="live && live.PowerProfile === 'balanced'    && 'active'" @click="setProfile('balanced')">Balanced</button>
+        <button class="profile-btn" :class="live && live.PowerProfile === 'power-saver' && 'active'" @click="setProfile('power-saver')">Power Saver</button>
       </div>
     </div>
 
-    <!-- Data cards -->
+    <!-- Data cards — always visible -->
     <div class="grid">
       <div class="card">
         <div class="card-title">Battery</div>
@@ -258,7 +267,7 @@
       </div>
     </div>
 
-    <!-- Charts -->
+    <!-- Charts — always visible -->
     <div class="chart-wrap">
       <div class="card-title">Battery % — last 5 min</div>
       <div x-ref="chartBatt"></div>
@@ -408,7 +417,6 @@
       <div class="settings-section" style="text-align:center;padding:40px 20px">
         <div style="font-size:1.6rem;margin-bottom:10px">🔒</div>
         <div style="color:var(--muted);margin-bottom:16px">Login required to manage settings.</div>
-        <button class="btn btn-accent" @click="loginOpen = true">Login</button>
       </div>
     </template>
 
@@ -667,7 +675,7 @@
       </div>
       <div class="form-error" x-text="loginError"></div>
       <div class="modal-actions">
-        <button class="btn-secondary" @click="loginOpen = false">Cancel</button>
+        <button class="btn-secondary" x-show="!adminMode" @click="loginOpen = false">Cancel</button>
         <button class="btn-primary"   @click="doLogin()">Login</button>
       </div>
     </div>
@@ -736,7 +744,7 @@
   }
 
   document.addEventListener('alpine:init', () => {
-    Alpine.data('sunblock', (initialAuth, initialSimMode, initialEnvDefaults, initialDataDir) => ({
+    Alpine.data('sunblock', (initialAuth, initialSimMode, initialEnvDefaults, initialDataDir, initialAdminMode) => ({
 
       // ── State ──
       tab:          'live',
@@ -746,6 +754,7 @@
       envDefaults:  initialEnvDefaults,
       dataDirectory: initialDataDir,
       dataDirDraft:  initialDataDir,
+      adminMode:    initialAdminMode,
       live:         null,
 
       // Charts
@@ -786,6 +795,12 @@
         this.connectSocket();
         this.$watch('loginOpen', open => { if (open) this.$nextTick(() => this.$refs.loginUserInput?.focus()); });
         this.$nextTick(() => this.initCharts());
+
+        // /admin entry-point: go straight to settings if already authed, else open login
+        if (this.adminMode) {
+          if (this.authed) this.switchTab('settings');
+          else             this.loginOpen = true;
+        }
       },
 
       // ── Connection ──
@@ -844,6 +859,8 @@
             this.authed = true;
             this.loginOpen = false;
             this.loginUser = this.loginPass = '';
+            // After login always land in settings
+            this.switchTab('settings');
           } else {
             this.loginError = 'Invalid username or password.';
           }
@@ -853,18 +870,20 @@
       async doLogout() {
         await fetch('/api/logout', { method: 'POST' });
         this.authed = false;
+        this.tab = 'live';  // public users only see Live
       },
 
       // ── Profile ──
       async setProfile(profile) {
-        if (!this.authed) { this.loginOpen = true; return; }
         const routes = { 'performance': '/api/performance-mode', 'balanced': '/api/balanced', 'power-saver': '/api/power-saver-mode' };
         const res = await fetch(routes[profile], { method: 'POST' });
-        if (res.status === 401) { this.authed = false; this.loginOpen = true; }
+        if (res.status === 401) { this.authed = false; this.tab = 'live'; }
       },
 
       // ── Tab switch ──
       switchTab(name) {
+        // Guard: non-live tabs require auth
+        if (name !== 'live' && !this.authed) return;
         this.tab = name;
         if (name === 'parameters' && !this.params)   this.loadParams();
         if (name === 'energy'     && !this.stats)    this.loadStats();
@@ -905,7 +924,7 @@
             this.params = await res.json();
             this.editOpen = false;
           } else if (res.status === 401) {
-            this.authed = false; this.editOpen = false; this.loginOpen = true;
+            this.authed = false; this.editOpen = false; this.tab = 'live';
           } else {
             const err = await res.json().catch(() => ({}));
             this.editError = err.detail || 'Failed to save.';
@@ -915,7 +934,7 @@
 
       async syncRtc() {
         const res = await fetch('/api/controller/rtc/sync', { method: 'POST' });
-        if (res.status === 401) { this.authed = false; this.loginOpen = true; }
+        if (res.status === 401) { this.authed = false; this.tab = 'live'; }
         else if (res.ok) this.loadParams();
       },
 

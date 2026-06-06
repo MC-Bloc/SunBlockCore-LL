@@ -46,6 +46,9 @@ ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH", "")
 SECRET_KEY          = os.getenv("SECRET_KEY", "changeme-secret-key")
 TOKEN_EXPIRE_HOURS  = int(os.getenv("TOKEN_EXPIRE_HOURS", 24))
 SECURE_COOKIES      = os.getenv("SECURE_COOKIES", "false").lower() == "true"
+# Secret slug for the admin login page — keep this out of public-facing links.
+# If unset the route is not registered (admins are warned at startup).
+ADMIN_PATH          = os.getenv("ADMIN_PATH")  # e.g. "/xK9mP3qR7"
 
 # ── Mode ──────────────────────────────────────────────────────────────────────
 SIM_MODE = os.getenv("SIM_MODE", "false").lower() == "true"
