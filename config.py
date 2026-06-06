@@ -21,6 +21,7 @@ POWER_DRAW_SCRIPT = os.getenv("POWER_DRAW_SCRIPT_ADDR", "/home/pc/power_scripts/
 POWER_LOGS_FILE   = os.path.join(DATA_DIRECTORY, "SunBlockCoreLogs.txt")
 DB_NAME           = os.path.join(DATA_DIRECTORY, "SunBlockCore-LL.db")
 DB_TABLE_NAME     = "solardata"
+SETTINGS_DB_NAME  = os.path.join(DATA_DIRECTORY, "sunblock_settings.db")
 
 # ── Data collection ───────────────────────────────────────────────────────────
 DATA_MAN      = os.getenv("DATA_MAN", "true").lower() == "true"
@@ -35,6 +36,16 @@ SECURE_COOKIES      = os.getenv("SECURE_COOKIES", "false").lower() == "true"
 
 # ── Mode ──────────────────────────────────────────────────────────────────────
 SIM_MODE = os.getenv("SIM_MODE", "false").lower() == "true"
+
+# ── Env-value snapshot ───────────────────────────────────────────────────────
+# Captured here, at import time, before load_settings() can overwrite anything.
+# Used by the reset-to-env endpoint so the original .env values are never lost.
+ENV_DEFAULTS = {
+    "read_interval":      READ_INTERVAL,
+    "data_man":           DATA_MAN,
+    "sim_mode":           SIM_MODE,
+    "token_expire_hours": TOKEN_EXPIRE_HOURS,
+}
 
 # ── Mutable runtime state ─────────────────────────────────────────────────────
 # Mutated by lifespan (sunblock.py) and polling_loop. Never import these

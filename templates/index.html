@@ -145,6 +145,10 @@
     .toggle input:checked + .toggle-slider { background: var(--accent); }
     .toggle input:checked + .toggle-slider::before { transform: translateX(18px); }
 
+    /* Reset button */
+    .btn-reset { padding: 5px 8px; font-size: 0.82rem; border-radius: 5px; border: 1px solid var(--border); color: var(--muted); background: transparent; cursor: pointer; line-height: 1; transition: color 0.15s, border-color 0.15s; }
+    .btn-reset:hover { color: var(--accent); border-color: var(--accent); }
+
     /* Feedback banners */
     .feedback-ok  { background: rgba(16,185,129,0.12); color: var(--green); border: 1px solid rgba(16,185,129,0.25); border-radius: 6px; padding: 8px 14px; font-size: 0.82rem; margin-bottom: 14px; }
     .feedback-err { background: rgba(239,68,68,0.12);  color: var(--red);   border: 1px solid rgba(239,68,68,0.25);  border-radius: 6px; padding: 8px 14px; font-size: 0.82rem; margin-bottom: 14px; }
@@ -152,7 +156,7 @@
 </head>
 <body>
 
-<div x-data="sunblock({{ is_authenticated | tojson }}, {{ sim_mode | tojson }})">
+<div x-data='sunblock({{ is_authenticated | tojson }}, {{ sim_mode | tojson }}, {{ env_defaults | tojson }})'>
 
   <!-- Header -->
   <header>
@@ -390,25 +394,29 @@
           <div class="settings-row">
             <div>
               <div class="settings-label">Read Interval</div>
-              <div class="settings-hint">Seconds between hardware reads (1 – 3600)</div>
+              <div class="settings-hint">Seconds between hardware reads (1–3600) &middot; env: <span x-text="envDefaults.read_interval"></span>s</div>
             </div>
-            <div style="display:flex;align-items:center;gap:8px">
+            <div style="display:flex;align-items:center;gap:6px">
               <input class="settings-input" type="number" min="1" max="3600"
                      x-model.number="settingsDraft.read_interval" />
               <button class="btn btn-action" @click="saveSetting('read_interval', settingsDraft.read_interval)">Save</button>
+              <button class="btn-reset" title="Reset to .env value" @click="resetSetting('read_interval')">↺</button>
             </div>
           </div>
 
           <div class="settings-row">
             <div>
               <div class="settings-label">Data Management</div>
-              <div class="settings-hint">Write readings to SQLite database</div>
+              <div class="settings-hint">Write readings to SQLite database &middot; env: <span x-text="envDefaults.data_man ? 'on' : 'off'"></span></div>
             </div>
-            <label class="toggle" title="Toggle data management">
-              <input type="checkbox" :checked="settingsDraft.data_man"
-                     @change="saveSetting('data_man', $event.target.checked)" />
-              <span class="toggle-slider"></span>
-            </label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <label class="toggle" title="Toggle data management">
+                <input type="checkbox" :checked="settingsDraft.data_man"
+                       @change="saveSetting('data_man', $event.target.checked)" />
+                <span class="toggle-slider"></span>
+              </label>
+              <button class="btn-reset" title="Reset to .env value" @click="resetSetting('data_man')">↺</button>
+            </div>
           </div>
         </div>
 
@@ -418,13 +426,16 @@
           <div class="settings-row">
             <div>
               <div class="settings-label">Simulator Mode</div>
-              <div class="settings-hint">Generate synthetic data — requires restart of polling if hardware is absent</div>
+              <div class="settings-hint">Generate synthetic data — requires restart of polling if hardware is absent &middot; env: <span x-text="envDefaults.sim_mode ? 'on' : 'off'"></span></div>
             </div>
-            <label class="toggle" title="Toggle simulator mode">
-              <input type="checkbox" :checked="settingsDraft.sim_mode"
-                     @change="saveSetting('sim_mode', $event.target.checked)" />
-              <span class="toggle-slider"></span>
-            </label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <label class="toggle" title="Toggle simulator mode">
+                <input type="checkbox" :checked="settingsDraft.sim_mode"
+                       @change="saveSetting('sim_mode', $event.target.checked)" />
+                <span class="toggle-slider"></span>
+              </label>
+              <button class="btn-reset" title="Reset to .env value" @click="resetSetting('sim_mode')">↺</button>
+            </div>
           </div>
         </div>
 
@@ -434,12 +445,13 @@
           <div class="settings-row">
             <div>
               <div class="settings-label">Token Expiry</div>
-              <div class="settings-hint">Hours before login session expires (1 – 720)</div>
+              <div class="settings-hint">Hours before login session expires (1–720) &middot; env: <span x-text="envDefaults.token_expire_hours"></span>h</div>
             </div>
-            <div style="display:flex;align-items:center;gap:8px">
+            <div style="display:flex;align-items:center;gap:6px">
               <input class="settings-input" type="number" min="1" max="720"
                      x-model.number="settingsDraft.token_expire_hours" />
               <button class="btn btn-action" @click="saveSetting('token_expire_hours', settingsDraft.token_expire_hours)">Save</button>
+              <button class="btn-reset" title="Reset to .env value" @click="resetSetting('token_expire_hours')">↺</button>
             </div>
           </div>
         </div>
@@ -552,14 +564,15 @@
   }
 
   document.addEventListener('alpine:init', () => {
-    Alpine.data('sunblock', (initialAuth, initialSimMode) => ({
+    Alpine.data('sunblock', (initialAuth, initialSimMode, initialEnvDefaults) => ({
 
       // ── State ──
-      tab:       'live',
-      connected: false,
-      authed:    initialAuth,
-      simMode:   initialSimMode,
-      live:      null,
+      tab:         'live',
+      connected:   false,
+      authed:      initialAuth,
+      simMode:     initialSimMode,
+      envDefaults: initialEnvDefaults,
+      live:        null,
 
       // Charts
       chartTimes: [], chartBatt: [], chartPV: [],
@@ -767,6 +780,25 @@
           this.settingsMsgOk = false;
           this.settingsMsg = 'Connection error.';
         }
+      },
+
+      async resetSetting(key) {
+        this.settingsMsg = '';
+        try {
+          const res = await fetch(`/api/settings/${key}`, { method: 'DELETE' });
+          const data = await res.json();
+          if (res.ok) {
+            this.settingsDraft = data;
+            this.simMode = data.sim_mode;
+            this.settingsMsgOk = true;
+            this.settingsMsg = 'Reset to .env default.';
+            setTimeout(() => { if (this.settingsMsg === 'Reset to .env default.') this.settingsMsg = ''; }, 2500);
+          } else {
+            await this.loadSettings();
+            this.settingsMsgOk = false;
+            this.settingsMsg = data.detail || 'Reset failed.';
+          }
+        } catch { this.settingsMsgOk = false; this.settingsMsg = 'Connection error.'; }
       },
 
       async changePassword() {

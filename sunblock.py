@@ -50,7 +50,7 @@ from auth import (
     check_session, create_token, verify_session,
     require_controller, require_real_controller,
 )
-from db import check_db, sunblock_log, write_db
+from db import check_db, delete_setting, load_settings, save_setting, sunblock_log, write_db
 from hardware import (
     apply_controller_params, check_power_profile,
     parse_data, read_controller_params,
@@ -100,6 +100,8 @@ async def polling_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     os.makedirs(config.DATA_DIRECTORY, exist_ok=True)
+    await asyncio.to_thread(load_settings)
+    await sunblock_log("Settings loaded from persistent store.")
 
     if not config.ADMIN_PASSWORD_HASH:
         await sunblock_log(
@@ -158,6 +160,7 @@ async def index(request: Request):
         "request":          request,
         "is_authenticated": check_session(request),
         "sim_mode":         config.SIM_MODE,
+        "env_defaults":     config.ENV_DEFAULTS,
     })
 
 @app.get("/api/mode")
@@ -222,21 +225,50 @@ async def update_settings(body: SettingsUpdate, user: str = Depends(verify_sessi
         if not 1 <= body.read_interval <= 3600:
             raise HTTPException(status_code=400, detail="read_interval must be 1–3600")
         config.READ_INTERVAL = body.read_interval
+        await asyncio.to_thread(save_setting, "read_interval", body.read_interval)
 
     if body.data_man is not None:
         config.DATA_MAN = body.data_man
+        await asyncio.to_thread(save_setting, "data_man", body.data_man)
 
     if body.sim_mode is not None:
         if not body.sim_mode and config.CONTROLLER is None:
             raise HTTPException(status_code=400, detail="Cannot disable simulator — no hardware controller is connected")
         config.SIM_MODE = body.sim_mode
+        await asyncio.to_thread(save_setting, "sim_mode", body.sim_mode)
 
     if body.token_expire_hours is not None:
         if not 1 <= body.token_expire_hours <= 720:
             raise HTTPException(status_code=400, detail="token_expire_hours must be 1–720")
         config.TOKEN_EXPIRE_HOURS = body.token_expire_hours
+        await asyncio.to_thread(save_setting, "token_expire_hours", body.token_expire_hours)
 
     return _settings_snapshot()
+
+@app.delete("/api/settings/{key}")
+async def reset_setting(key: str, user: str = Depends(verify_session)):
+    _restorable = {"read_interval", "data_man", "sim_mode", "token_expire_hours"}
+    if key not in _restorable:
+        raise HTTPException(status_code=404, detail=f"Unknown or non-resettable setting: {key}")
+
+    env_val = config.ENV_DEFAULTS[key]
+
+    if key == "sim_mode" and not env_val and config.CONTROLLER is None:
+        raise HTTPException(status_code=400, detail="Cannot disable simulator — no hardware controller is connected")
+
+    await asyncio.to_thread(delete_setting, key)
+
+    # Restore live config to the original env value
+    _restore = {
+        "read_interval":      lambda v: setattr(config, "READ_INTERVAL",      v),
+        "data_man":           lambda v: setattr(config, "DATA_MAN",           v),
+        "sim_mode":           lambda v: setattr(config, "SIM_MODE",           v),
+        "token_expire_hours": lambda v: setattr(config, "TOKEN_EXPIRE_HOURS", v),
+    }
+    _restore[key](env_val)
+
+    return _settings_snapshot()
+
 
 @app.post("/api/settings/password")
 async def change_password(body: PasswordChange, user: str = Depends(verify_session)):
@@ -246,7 +278,9 @@ async def change_password(body: PasswordChange, user: str = Depends(verify_sessi
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     if len(body.new_password) < 8:
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
-    config.ADMIN_PASSWORD_HASH = _bcrypt.hashpw(body.new_password.encode(), _bcrypt.gensalt()).decode()
+    new_hash = _bcrypt.hashpw(body.new_password.encode(), _bcrypt.gensalt()).decode()
+    config.ADMIN_PASSWORD_HASH = new_hash
+    await asyncio.to_thread(save_setting, "admin_password_hash", new_hash)
     return {"message": "Password updated"}
 
 
