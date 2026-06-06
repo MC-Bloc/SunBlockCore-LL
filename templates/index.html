@@ -126,6 +126,28 @@
 
     /* uPlot theme overrides */
     .uplot .u-legend { display: none; }
+
+    /* Settings panel */
+    .settings-section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; margin-bottom: 16px; }
+    .settings-title { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+    .settings-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; gap: 16px; }
+    .settings-row + .settings-row { border-top: 1px solid var(--border); }
+    .settings-label { font-size: 0.88rem; font-weight: 500; }
+    .settings-hint  { font-size: 0.76rem; color: var(--muted); margin-top: 3px; }
+    .settings-input { width: 90px; padding: 6px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.88rem; outline: none; text-align: right; }
+    .settings-input:focus { border-color: var(--accent); }
+
+    /* Toggle switch */
+    .toggle { position: relative; display: inline-block; width: 40px; height: 22px; flex-shrink: 0; cursor: pointer; }
+    .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+    .toggle-slider { position: absolute; inset: 0; background: var(--border); border-radius: 22px; transition: background 0.2s; }
+    .toggle-slider::before { content: ''; position: absolute; width: 16px; height: 16px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: transform 0.2s; }
+    .toggle input:checked + .toggle-slider { background: var(--accent); }
+    .toggle input:checked + .toggle-slider::before { transform: translateX(18px); }
+
+    /* Feedback banners */
+    .feedback-ok  { background: rgba(16,185,129,0.12); color: var(--green); border: 1px solid rgba(16,185,129,0.25); border-radius: 6px; padding: 8px 14px; font-size: 0.82rem; margin-bottom: 14px; }
+    .feedback-err { background: rgba(239,68,68,0.12);  color: var(--red);   border: 1px solid rgba(239,68,68,0.25);  border-radius: 6px; padding: 8px 14px; font-size: 0.82rem; margin-bottom: 14px; }
   </style>
 </head>
 <body>
@@ -146,6 +168,7 @@
     <div class="tab" :class="tab === 'live'       && 'active'" @click="tab = 'live'">Live</div>
     <div class="tab" :class="tab === 'parameters' && 'active'" @click="switchTab('parameters')">Parameters</div>
     <div class="tab" :class="tab === 'energy'     && 'active'" @click="switchTab('energy')">Energy</div>
+    <div class="tab" :class="tab === 'settings'   && 'active'" @click="switchTab('settings')">Settings</div>
   </nav>
 
   <!-- ══ LIVE ══ -->
@@ -345,6 +368,107 @@
     </div>
   </div>
 
+  <!-- ══ SETTINGS ══ -->
+  <div class="panel" x-show="tab === 'settings'">
+
+    <template x-if="!authed">
+      <div class="settings-section" style="text-align:center;padding:40px 20px">
+        <div style="font-size:1.6rem;margin-bottom:10px">🔒</div>
+        <div style="color:var(--muted);margin-bottom:16px">Login required to manage settings.</div>
+        <button class="btn btn-accent" @click="loginOpen = true">Login</button>
+      </div>
+    </template>
+
+    <template x-if="authed">
+      <div>
+
+        <!-- Polling -->
+        <div class="settings-section">
+          <div class="settings-title">Polling</div>
+          <div x-show="settingsMsg" :class="settingsMsgOk ? 'feedback-ok' : 'feedback-err'" x-text="settingsMsg"></div>
+
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Read Interval</div>
+              <div class="settings-hint">Seconds between hardware reads (1 – 3600)</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input class="settings-input" type="number" min="1" max="3600"
+                     x-model.number="settingsDraft.read_interval" />
+              <button class="btn btn-action" @click="saveSetting('read_interval', settingsDraft.read_interval)">Save</button>
+            </div>
+          </div>
+
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Data Management</div>
+              <div class="settings-hint">Write readings to SQLite database</div>
+            </div>
+            <label class="toggle" title="Toggle data management">
+              <input type="checkbox" :checked="settingsDraft.data_man"
+                     @change="saveSetting('data_man', $event.target.checked)" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Simulator -->
+        <div class="settings-section">
+          <div class="settings-title">Simulator</div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Simulator Mode</div>
+              <div class="settings-hint">Generate synthetic data — requires restart of polling if hardware is absent</div>
+            </div>
+            <label class="toggle" title="Toggle simulator mode">
+              <input type="checkbox" :checked="settingsDraft.sim_mode"
+                     @change="saveSetting('sim_mode', $event.target.checked)" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Session -->
+        <div class="settings-section">
+          <div class="settings-title">Session</div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Token Expiry</div>
+              <div class="settings-hint">Hours before login session expires (1 – 720)</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input class="settings-input" type="number" min="1" max="720"
+                     x-model.number="settingsDraft.token_expire_hours" />
+              <button class="btn btn-action" @click="saveSetting('token_expire_hours', settingsDraft.token_expire_hours)">Save</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Password -->
+        <div class="settings-section">
+          <div class="settings-title">Change Password</div>
+          <div x-show="pwMsg" :class="pwMsgOk ? 'feedback-ok' : 'feedback-err'" x-text="pwMsg"></div>
+          <div class="field"><label>Current password</label>
+            <input type="password" x-model="pwForm.current" autocomplete="current-password" />
+          </div>
+          <div class="field-grid" style="margin-top:10px">
+            <div class="field"><label>New password</label>
+              <input type="password" x-model="pwForm.next" autocomplete="new-password" />
+            </div>
+            <div class="field"><label>Confirm new password</label>
+              <input type="password" x-model="pwForm.confirm" autocomplete="new-password"
+                     @keydown.enter="changePassword()" />
+            </div>
+          </div>
+          <div style="display:flex;justify-content:flex-end;margin-top:14px">
+            <button class="btn btn-action" @click="changePassword()">Update Password</button>
+          </div>
+        </div>
+
+      </div>
+    </template>
+  </div>
+
   <!-- ══ LOGIN MODAL ══ -->
   <div class="overlay" :class="loginOpen && 'open'" @click.self="loginOpen = false">
     <div class="modal" @keydown.escape.window="loginOpen = false">
@@ -447,6 +571,12 @@
       // Energy
       stats: null,
 
+      // Settings
+      settingsDraft: { read_interval: 1, data_man: true, sim_mode: false, token_expire_hours: 24 },
+      settingsMsg: '', settingsMsgOk: true,
+      pwForm: { current: '', next: '', confirm: '' },
+      pwMsg: '', pwMsgOk: true,
+
       // Login modal
       loginOpen:  false,
       loginUser:  '',
@@ -546,6 +676,7 @@
         this.tab = name;
         if (name === 'parameters' && !this.params)  this.loadParams();
         if (name === 'energy'     && !this.stats)   this.loadStats();
+        if (name === 'settings')                     this.loadSettings();
       },
 
       // ── Parameters ──
@@ -599,6 +730,66 @@
       async loadStats() {
         const res = await fetch('/api/controller/stats');
         if (res.ok) this.stats = await res.json();
+      },
+
+      // ── Settings ──
+      async loadSettings() {
+        if (!this.authed) return;
+        const res = await fetch('/api/settings');
+        if (res.ok) {
+          this.settingsDraft = await res.json();
+          this.simMode = this.settingsDraft.sim_mode;
+        }
+      },
+
+      async saveSetting(key, value) {
+        this.settingsMsg = '';
+        try {
+          const res = await fetch('/api/settings', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ [key]: value }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            this.settingsDraft = data;
+            this.simMode = data.sim_mode;
+            this.settingsMsgOk = true;
+            this.settingsMsg = 'Saved.';
+            setTimeout(() => { if (this.settingsMsg === 'Saved.') this.settingsMsg = ''; }, 2500);
+          } else {
+            // revert draft to actual server state on failure
+            await this.loadSettings();
+            this.settingsMsgOk = false;
+            this.settingsMsg = data.detail || 'Failed to save.';
+          }
+        } catch {
+          this.settingsMsgOk = false;
+          this.settingsMsg = 'Connection error.';
+        }
+      },
+
+      async changePassword() {
+        this.pwMsg = '';
+        if (!this.pwForm.current) { this.pwMsgOk = false; this.pwMsg = 'Enter your current password.'; return; }
+        if (this.pwForm.next !== this.pwForm.confirm) { this.pwMsgOk = false; this.pwMsg = 'New passwords do not match.'; return; }
+        if (this.pwForm.next.length < 8) { this.pwMsgOk = false; this.pwMsg = 'Password must be at least 8 characters.'; return; }
+        try {
+          const res = await fetch('/api/settings/password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ current_password: this.pwForm.current, new_password: this.pwForm.next }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            this.pwMsgOk = true;
+            this.pwMsg = 'Password updated.';
+            this.pwForm = { current: '', next: '', confirm: '' };
+          } else {
+            this.pwMsgOk = false;
+            this.pwMsg = data.detail || 'Failed.';
+          }
+        } catch { this.pwMsgOk = false; this.pwMsg = 'Connection error.'; }
       },
 
       fmt(v) { return v != null ? Number(v).toFixed(2) : '–'; },

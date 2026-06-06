@@ -24,6 +24,16 @@ class ControllerParamsUpdate(BaseModel):
     temperature_compensation_coefficient: Optional[float] = None
     voltage_controls: Optional[dict] = None
 
+class SettingsUpdate(BaseModel):
+    read_interval:      Optional[int]   = None  # seconds, 1–3600
+    data_man:           Optional[bool]  = None
+    sim_mode:           Optional[bool]  = None
+    token_expire_hours: Optional[int]   = None  # 1–720
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
 
 # ── Rate limiter ──────────────────────────────────────────────────────────────
 

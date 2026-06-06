@@ -46,7 +46,7 @@ from slowapi.errors import RateLimitExceeded
 
 import config
 from auth import (
-    ControllerParamsUpdate, LoginRequest, limiter,
+    ControllerParamsUpdate, LoginRequest, SettingsUpdate, PasswordChange, limiter,
     check_session, create_token, verify_session,
     require_controller, require_real_controller,
 )
@@ -68,10 +68,10 @@ async def polling_loop():
         await sunblock_log("Data Management is " + str(config.DATA_MAN))
         await asyncio.to_thread(check_db)
 
-    loop    = asyncio.get_running_loop()
-    poll_fn = simulate_data if config.SIM_MODE else parse_data
+    loop = asyncio.get_running_loop()
 
     while config.POLLING_ACTIVE:
+        poll_fn = simulate_data if config.SIM_MODE else parse_data
         try:
             new_data = await loop.run_in_executor(None, poll_fn)
             config.SOLAR_DATA = new_data  # atomic reference swap
@@ -200,6 +200,54 @@ async def auth_status(request: Request):
 @app.get("/api/data")
 async def get_data():
     return JSONResponse(content=config.SOLAR_DATA, status_code=200)
+
+
+# Settings
+
+def _settings_snapshot() -> dict:
+    return {
+        "read_interval":      config.READ_INTERVAL,
+        "data_man":           config.DATA_MAN,
+        "sim_mode":           config.SIM_MODE,
+        "token_expire_hours": config.TOKEN_EXPIRE_HOURS,
+    }
+
+@app.get("/api/settings")
+async def get_settings(user: str = Depends(verify_session)):
+    return _settings_snapshot()
+
+@app.patch("/api/settings")
+async def update_settings(body: SettingsUpdate, user: str = Depends(verify_session)):
+    if body.read_interval is not None:
+        if not 1 <= body.read_interval <= 3600:
+            raise HTTPException(status_code=400, detail="read_interval must be 1–3600")
+        config.READ_INTERVAL = body.read_interval
+
+    if body.data_man is not None:
+        config.DATA_MAN = body.data_man
+
+    if body.sim_mode is not None:
+        if not body.sim_mode and config.CONTROLLER is None:
+            raise HTTPException(status_code=400, detail="Cannot disable simulator — no hardware controller is connected")
+        config.SIM_MODE = body.sim_mode
+
+    if body.token_expire_hours is not None:
+        if not 1 <= body.token_expire_hours <= 720:
+            raise HTTPException(status_code=400, detail="token_expire_hours must be 1–720")
+        config.TOKEN_EXPIRE_HOURS = body.token_expire_hours
+
+    return _settings_snapshot()
+
+@app.post("/api/settings/password")
+async def change_password(body: PasswordChange, user: str = Depends(verify_session)):
+    if not config.ADMIN_PASSWORD_HASH:
+        raise HTTPException(status_code=503, detail="No password configured on server")
+    if not _bcrypt.checkpw(body.current_password.encode(), config.ADMIN_PASSWORD_HASH.encode()):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    config.ADMIN_PASSWORD_HASH = _bcrypt.hashpw(body.new_password.encode(), _bcrypt.gensalt()).decode()
+    return {"message": "Password updated"}
 
 
 # Power profile
