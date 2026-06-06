@@ -200,13 +200,13 @@
       <div class="tab" :class="tab === 'energy'     && 'active'" @click="switchTab('energy')">Energy</div>
     </template>
     <template x-if="authed">
-      <div class="tab" :class="tab === 'settings'   && 'active'" @click="switchTab('settings')">Settings</div>
-    </template>
-    <template x-if="authed">
       <div class="tab" :class="tab === 'history'    && 'active'" @click="switchTab('history')">History</div>
     </template>
     <template x-if="authed">
       <div class="tab" :class="tab === 'visualize'  && 'active'" @click="switchTab('visualize')">Visualize</div>
+    </template>
+    <template x-if="authed">
+      <div class="tab" :class="tab === 'settings'   && 'active'" @click="switchTab('settings')">Settings</div>
     </template>
   </nav>
 
