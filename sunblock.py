@@ -80,7 +80,7 @@ async def polling_loop():
             await sunblock_log("Hardware error, stopping poll: " + str(e))
             break
 
-        if config.DATA_MAN:
+        if config.DATA_MAN and not config.SIM_MODE:
             try:
                 await loop.run_in_executor(None, write_db)
             except Exception as e:
