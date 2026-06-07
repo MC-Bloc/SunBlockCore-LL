@@ -1,9 +1,11 @@
 """SQLite persistence, application logging, and history queries."""
 
 import asyncio
+import hashlib
 import os
+import secrets
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import config
@@ -142,6 +144,129 @@ def delete_setting(key: str) -> None:
     try:
         conn.execute("DELETE FROM settings WHERE key = ?", (key,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ── API tokens store ──────────────────────────────────────────────────────────
+#
+# Tokens live in the same `sunblock_settings.db` as runtime settings rather than
+# in a new database file or the high-volume telemetry DB:
+#   - It already lives at a fixed location independent of DATA_DIRECTORY, so
+#     tokens stay manageable even before a data directory is configured.
+#   - It's already the home for low-write-volume admin/config metadata — auth
+#     records belong with it, not in the append-only telemetry store.
+#   - It avoids proliferating SQLite files and reuses the established
+#     connection-per-call / try-finally pattern from this module.
+#
+# Only a SHA-256 hash of each token is stored — never the raw value. Tokens are
+# high-entropy random strings (secrets.token_urlsafe), unlike human passwords,
+# so a fast unsalted cryptographic hash is appropriate (and avoids the
+# deliberate slowness of bcrypt on every API request). The raw token is shown
+# to the admin exactly once, at creation time, and cannot be retrieved again.
+
+def _tokens_conn() -> sqlite3.Connection:
+    """Open the settings DB and ensure the api_tokens table exists."""
+    conn = sqlite3.connect(config.SETTINGS_DB_NAME)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS api_tokens ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " name TEXT NOT NULL,"
+        " token_hash TEXT NOT NULL UNIQUE,"
+        " created_at TEXT NOT NULL,"
+        " expires_at TEXT,"
+        " last_used_at TEXT"
+        ")"
+    )
+    conn.commit()
+    return conn
+
+
+def _hash_token(raw_token: str) -> str:
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def create_api_token(name: str, expires_in_hours: Optional[int]) -> tuple:
+    """
+    Generate a new high-entropy API token, persist its hash, and return
+    (token_id, raw_token). The raw token is never stored — only this call
+    ever sees it in plaintext.
+    """
+    raw_token = "sbll_" + secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    expires_at = (now + timedelta(hours=expires_in_hours)).isoformat() if expires_in_hours else None
+
+    conn = _tokens_conn()
+    try:
+        cur = conn.execute(
+            "INSERT INTO api_tokens (name, token_hash, created_at, expires_at, last_used_at)"
+            " VALUES (?, ?, ?, ?, NULL)",
+            (name, _hash_token(raw_token), now.isoformat(), expires_at),
+        )
+        conn.commit()
+        return cur.lastrowid, raw_token
+    finally:
+        conn.close()
+
+
+def list_api_tokens() -> list:
+    """Return token metadata only — names, dates, never the hash or raw value."""
+    conn = _tokens_conn()
+    try:
+        rows = conn.execute(
+            "SELECT id, name, created_at, expires_at, last_used_at"
+            " FROM api_tokens ORDER BY created_at DESC"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [
+        {
+            "id": r[0], "name": r[1], "created_at": r[2],
+            "expires_at": r[3], "last_used_at": r[4],
+        }
+        for r in rows
+    ]
+
+
+def revoke_api_token(token_id: int) -> bool:
+    """Delete a token by id. Returns True if a row was removed."""
+    conn = _tokens_conn()
+    try:
+        cur = conn.execute("DELETE FROM api_tokens WHERE id = ?", (token_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def verify_api_token(raw_token: str) -> Optional[str]:
+    """
+    Validate a raw bearer token against stored hashes.
+    Returns the admin username on success (and records last_used_at), else None.
+    Expired tokens are rejected (and lazily deleted).
+    """
+    conn = _tokens_conn()
+    try:
+        row = conn.execute(
+            "SELECT id, expires_at FROM api_tokens WHERE token_hash = ?",
+            (_hash_token(raw_token),),
+        ).fetchone()
+        if row is None:
+            return None
+
+        token_id, expires_at = row
+        if expires_at is not None:
+            if datetime.fromisoformat(expires_at) <= datetime.now(timezone.utc):
+                conn.execute("DELETE FROM api_tokens WHERE id = ?", (token_id,))
+                conn.commit()
+                return None
+
+        conn.execute(
+            "UPDATE api_tokens SET last_used_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), token_id),
+        )
+        conn.commit()
+        return config.ADMIN_USERNAME
     finally:
         conn.close()
 

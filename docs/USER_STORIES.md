@@ -267,6 +267,25 @@ As an **Operator**, I want data access endpoints (history, visualize, downloads)
 
 ---
 
+## API Tokens (External / Programmatic Access)
+
+**US-064**  
+As a **Developer**, I want to generate a bearer token from the admin panel with a custom name and a configurable expiry (1 day to 1 year, or never), so that I can call SunBlockCore-LL's API endpoints from scripts, dashboards, and automations without a browser session.
+
+**US-065**  
+As an **Admin**, I want the raw token value to be shown to me exactly once at creation time, with a one-click copy button and a clear warning that it cannot be retrieved again, so that I understand it must be saved immediately and securely.
+
+**US-066**  
+As an **Admin**, I want to see a list of all my API tokens — name, creation date, expiry, and last-used time — and revoke any of them instantly, so that I can audit which integrations are active and cut off access the moment a token is no longer needed or may have leaked.
+
+**US-067**  
+As an **Operator**, I want every token creation and revocation to be written to the admin audit log with a timestamp and IP address, so that token lifecycle events are traceable alongside every other administrative action.
+
+**US-068**  
+As an **Operator**, I want token management itself (`/api/tokens`) and the password-change endpoint to require a real browser session — not accept a bearer token — so that a leaked API token can never be used to mint new tokens, revoke the admin's own tokens, or take over the account.
+
+---
+
 ## Acceptance Criteria Summary
 
 | Story | Status |
@@ -286,3 +305,4 @@ As an **Operator**, I want data access endpoints (history, visualize, downloads)
 | US-054 – US-055 (Configurable extra live charts) | Implemented |
 | US-056 – US-059 (Access tiers + secret admin path) | Implemented |
 | US-060 – US-063 (Audit logging + DoS + path protection) | Implemented |
+| US-064 – US-068 (API tokens for external/programmatic access) | Implemented |

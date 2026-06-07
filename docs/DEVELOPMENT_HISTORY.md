@@ -241,6 +241,38 @@ Full replication of `SunBlock_DataProcessing.ipynb` inside the browser:
 
 ---
 
+## Session 9 — API Tokens for External Access
+
+### Problem
+
+All authenticated API access required a browser session cookie (`sb_session`). External scripts, monitoring dashboards, and automations have no way to obtain or send a cookie, so the API was effectively unusable from outside the browser.
+
+### Solution: revocable bearer tokens, generated and managed from the admin panel
+
+**Storage decision — new `api_tokens` table inside the existing `sunblock_settings.db`** (not a new database file, not the telemetry DB):
+- That database already lives at a fixed location independent of `DATA_DIRECTORY`
+- It's already the home for low-write-volume admin/config metadata — auth records belong with it
+- Reuses the established `_settings_conn()`-style connection-per-call / `CREATE TABLE IF NOT EXISTS` / try-finally pattern (`db._tokens_conn()`)
+- Avoids proliferating SQLite files for a handful of records
+
+**Token format and hashing** — `secrets.token_urlsafe(32)` prefixed `sbll_` (consistent with `SECRET_KEY`/`ADMIN_PATH`/CSP-nonce generation already in the codebase). Only a SHA-256 hash is ever stored (`db._hash_token`); the raw value is returned exactly once, at creation, and cannot be retrieved afterward. SHA-256 — not bcrypt — because tokens are already 256-bit random strings; bcrypt's deliberate slowness defends low-entropy human passwords and would only add latency to every API call here.
+
+**New `db.py` functions** — `create_api_token(name, expires_in_hours)`, `list_api_tokens()`, `revoke_api_token(id)`, `verify_api_token(raw_token)` (validates hash + expiry, lazily deletes expired tokens, records `last_used_at`, returns `ADMIN_USERNAME` or `None`).
+
+**New `auth.py` dependency — `verify_session_or_token`** — tries the JWT session cookie first (browser path, unchanged), then falls back to parsing `Authorization: Bearer <token>` and validating it via `verify_api_token`. Replaces `Depends(verify_session)` on all data/control endpoints (`history`, `visualize`, downloads, `settings` get/patch/reset, power profiles, controller parameters/RTC sync).
+
+**Deliberate carve-out — token management stays session-only.** `POST/GET/DELETE /api/tokens` and `POST /api/settings/password` keep `Depends(verify_session)`. Reasoning: if a leaked token could create new tokens or revoke the admin's own, a single leak could escalate into permanent, unrecoverable persistence. Restricting self-management to the cookie-based session means a leaked token's worst case is data/control access — bounded, and always revocable by the legitimate admin.
+
+**New routes** — `POST /api/tokens` (create; returns the raw token once), `GET /api/tokens` (list metadata only — id, name, created_at, expires_at, last_used_at; never the hash or raw value), `DELETE /api/tokens/{id}` (revoke; takes effect immediately). Each is logged via `admin_log()` (`TOKEN_CREATED`, `TOKEN_REVOKED`).
+
+**Admin panel UI** — new "API Tokens" card in the Settings tab: name + expiry (1 day / 1 week / 30 / 90 / 365 days / never) form, a one-time reveal banner with copy-to-clipboard for the freshly generated token, and a table of existing tokens (name, created, expires, last used, revoke).
+
+### Why this design and not a separate permissions tier
+
+SunBlockCore-LL has exactly one admin account (see `docs/SECURITY.md` — "Single admin account"). Building a scoped/role-based token system would add real complexity (token scopes, permission checks on every route, UI for configuring them) with no second principal to apply it to. Granting tokens session-equivalent access — minus self-management — gets external integrations working with the simplest model that actually matches the deployment reality, while still capping the damage a leak can do.
+
+---
+
 ## Summary of All API Endpoints (current)
 
 | Method | Path | Auth | Description |
@@ -261,7 +293,10 @@ Full replication of `SunBlock_DataProcessing.ipynb` inside the browser:
 | GET | `/api/settings` | **Yes** | Current runtime settings |
 | PATCH | `/api/settings` | **Yes** | Update one or more settings |
 | DELETE | `/api/settings/{key}` | **Yes** | Reset setting to .env value |
-| POST | `/api/settings/password` | **Yes** | Change admin password |
+| POST | `/api/settings/password` | Session only | Change admin password |
+| POST | `/api/tokens` | Session only | Generate an API bearer token (raw value shown once) |
+| GET | `/api/tokens` | Session only | List API tokens (metadata only) |
+| DELETE | `/api/tokens/{id}` | Session only | Revoke an API token |
 | GET | `/api/power-profile` | Controller | Current power profile |
 | POST | `/api/performance-mode` | **Yes** + HW | Set performance profile |
 | POST | `/api/power-saver-mode` | **Yes** + HW | Set power-saver profile |
@@ -273,6 +308,9 @@ Full replication of `SunBlock_DataProcessing.ipynb` inside the browser:
 | POST | `/api/controller/rtc/sync` | **Yes** + HW | Sync RTC to server time |
 
 **Auth legend:**  
+- ***Yes*** now means `verify_session_or_token` — accepts a session cookie OR `Authorization: Bearer <sbll_...>` API token  
+- *Session only* means `verify_session` — cookie required, bearer tokens deliberately rejected (Session 9: prevents a leaked token from escalating to account takeover)
+  
 - *No* — public endpoint  
 - ***Yes*** — requires valid JWT cookie (`verify_session`)  
 - *Controller* — requires controller OR sim mode (`require_controller`)  
@@ -285,12 +323,12 @@ Full replication of `SunBlock_DataProcessing.ipynb` inside the browser:
 | File | Sessions | Key changes |
 |---|---|---|
 | `config.py` | 3, 5, 8 | Module introduced; SETTINGS_DB_NAME, ENV_DEFAULTS, ADMIN_PATH, ADMIN_AUDIT_FILE |
-| `auth.py` | 3, 4, 5 | Module introduced; SettingsUpdate, PasswordChange models |
-| `db.py` | 3, 5, 7, 8 | Module introduced; settings store, query_history, query_visualize, admin_log, _validate_data_directory |
+| `auth.py` | 3, 4, 5, 9 | Module introduced; SettingsUpdate, PasswordChange, TokenCreateRequest models; verify_session_or_token dependency |
+| `db.py` | 3, 5, 7, 8, 9 | Module introduced; settings store, query_history, query_visualize, admin_log, _validate_data_directory, api_tokens store (create/list/revoke/verify) |
 | `hardware.py` | 3 | Extracted from sunblock.py |
 | `simulator.py` | 2, 3 | Created; extracted to own module |
-| `sunblock.py` | 2–8 | Refactored; all routes, security hardening, rate limits, CSP, audit log calls |
-| `templates/index.html` | 4–8 | Settings, History, Visualize tabs; extra charts; auth-gating; CSP nonce; Plotly |
+| `sunblock.py` | 2–9 | Refactored; all routes, security hardening, rate limits, CSP, audit log calls; API token routes |
+| `templates/index.html` | 4–9 | Settings, History, Visualize tabs; extra charts; auth-gating; CSP nonce; Plotly; API Tokens panel |
 | `templates/404.html` | 8 | Created: custom 404 page |
 | `sample.env` | 2, 8 | SIM_MODE, ADMIN_PATH, cleanup |
 | `scripts/deploy.sh` | early, 8 | systemd deployment; ADMIN_PATH generation; openpyxl |

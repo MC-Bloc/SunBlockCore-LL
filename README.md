@@ -33,6 +33,7 @@ Epever MPPT Charge Controller
 - **Controller parameters** — view and edit battery configuration and voltage thresholds from the browser
 - **Energy statistics** — today / this month / this year / all-time generated and consumed kWh
 - **Runtime settings** — change poll interval, toggle data logging, toggle simulator, adjust session expiry — all live, all persistent across restarts
+- **API tokens** — generate revocable bearer tokens with configurable expiry to call the API from outside the browser (scripts, dashboards, automations)
 - **Simulator mode** — generates realistic synthetic data based on 1.28 million rows of real Montreal solar data; no hardware required
 - **Separated public / admin views** — `/` serves only the live feed with no admin HTML in the page; the full admin panel (all tabs, login modal) is served exclusively from the secret `ADMIN_PATH` URL
 - **Secure admin panel** — bcrypt passwords, JWT sessions in HttpOnly cookies, per-request CSP nonces, secret login path, per-IP rate limiting on all data endpoints, admin audit log
@@ -129,7 +130,7 @@ docs/
 
 ## API
 
-All endpoints return JSON. Write operations and data access require a valid session cookie.
+All endpoints return JSON. Write operations and data access require either a valid session cookie (browser) or an `Authorization: Bearer <token>` header (external/programmatic access — generate tokens from Settings → API Tokens).
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
@@ -149,7 +150,10 @@ All endpoints return JSON. Write operations and data access require a valid sess
 | GET | `/api/settings` | **Yes** | Current runtime settings |
 | PATCH | `/api/settings` | **Yes** | Update settings live |
 | DELETE | `/api/settings/{key}` | **Yes** | Reset setting to `.env` value |
-| POST | `/api/settings/password` | **Yes** | Change admin password |
+| POST | `/api/settings/password` | **Session only** | Change admin password |
+| POST | `/api/tokens` | **Session only** | Generate an API token — `{name, expires_in_hours}`; raw token returned once |
+| GET | `/api/tokens` | **Session only** | List API tokens (metadata only — no raw tokens or hashes) |
+| DELETE | `/api/tokens/{id}` | **Session only** | Revoke an API token |
 | GET | `/api/power-profile` | Controller | Current power profile |
 | GET | `/api/controller/parameters` | Controller | Battery and charge configuration |
 | PUT | `/api/controller/parameters` | **Yes** + HW | Write battery/charge config |
@@ -160,7 +164,17 @@ All endpoints return JSON. Write operations and data access require a valid sess
 | POST | `/api/power-saver-mode` | **Yes** + HW | Set power-saver profile |
 | POST | `/api/balanced` | **Yes** + HW | Set balanced profile |
 
-**Auth legend:** *Yes* = requires valid JWT cookie. *Controller* = requires controller or sim mode. *HW* = requires real hardware (not sim).
+**Auth legend:** *Yes* = valid JWT session cookie **or** `Authorization: Bearer <API token>`. *Session only* = JWT cookie required; bearer tokens are deliberately rejected on these sensitive/self-management endpoints (see `docs/SECURITY.md`). *Controller* = requires controller or sim mode. *HW* = requires real hardware (not sim).
+
+### Calling the API from outside the browser
+
+1. Log in to the admin panel and open **Settings → API Tokens**.
+2. Give the token a name and an expiry, then click **Generate**. The raw token is shown once — copy it immediately.
+3. Send it as a bearer token on each request:
+   ```bash
+   curl -H "Authorization: Bearer sbll_<token>" http://localhost:3707/api/data/history
+   ```
+4. Revoke it from the same panel at any time — revocation takes effect immediately.
 
 ### Live Socket.IO
 

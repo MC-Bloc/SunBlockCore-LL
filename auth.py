@@ -4,13 +4,14 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import bcrypt as _bcrypt
-from fastapi import Cookie, HTTPException, Request
+from fastapi import Cookie, Header, HTTPException, Request
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 import config
+from db import verify_api_token
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -34,6 +35,10 @@ class SettingsUpdate(BaseModel):
 class PasswordChange(BaseModel):
     current_password: str
     new_password: str
+
+class TokenCreateRequest(BaseModel):
+    name: str
+    expires_in_hours: Optional[int] = None  # None = never expires
 
 
 # ── Rate limiter ──────────────────────────────────────────────────────────────
@@ -72,6 +77,32 @@ def verify_session(sb_session: Optional[str] = Cookie(default=None)) -> str:
         return username
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+
+def verify_session_or_token(
+    sb_session:    Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> str:
+    """
+    Accepts either a browser session cookie OR an `Authorization: Bearer <token>`
+    header — the latter is how external scripts/services authenticate to the API
+    without ever holding a session cookie (and thus without CSRF exposure).
+    """
+    if sb_session:
+        try:
+            payload = jwt.decode(sb_session, config.SECRET_KEY, algorithms=["HS256"])
+            if payload.get("sub") == config.ADMIN_USERNAME:
+                return payload["sub"]
+        except JWTError:
+            pass
+
+    if authorization and authorization.lower().startswith("bearer "):
+        raw_token = authorization[7:].strip()
+        username = verify_api_token(raw_token)
+        if username:
+            return username
+
+    raise HTTPException(status_code=401, detail="Not authenticated")
 
 
 def require_controller():

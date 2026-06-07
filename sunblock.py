@@ -51,14 +51,15 @@ from slowapi.errors import RateLimitExceeded
 
 import config
 from auth import (
-    ControllerParamsUpdate, LoginRequest, SettingsUpdate, PasswordChange, limiter,
-    check_session, create_token, verify_session,
+    ControllerParamsUpdate, LoginRequest, SettingsUpdate, PasswordChange,
+    TokenCreateRequest, limiter,
+    check_session, create_token, verify_session, verify_session_or_token,
     require_controller, require_real_controller,
 )
 from db import (
-    admin_log, apply_data_directory, check_db, delete_setting,
-    load_settings, query_history, query_visualize,
-    save_setting, sunblock_log, write_db,
+    admin_log, apply_data_directory, check_db, create_api_token, delete_setting,
+    list_api_tokens, load_settings, query_history, query_visualize,
+    revoke_api_token, save_setting, sunblock_log, write_db,
 )
 from db import VIZ_FIELD_META
 from hardware import (
@@ -330,7 +331,7 @@ async def get_data_history(
     from_ts: Optional[str]      = Query(default=None, alias="from"),
     to_ts:   Optional[str]      = Query(default=None, alias="to"),
     order:   str                = "desc",
-    user:    str                = Depends(verify_session),
+    user:    str                = Depends(verify_session_or_token),
 ):
     """
     Paginated history of solar readings from the SQLite database.
@@ -366,7 +367,7 @@ def _db_guard():
 
 @app.get("/api/data/visualize/fields")
 @limiter.limit("60/minute")
-async def get_viz_fields(request: Request, user: str = Depends(verify_session)):
+async def get_viz_fields(request: Request, user: str = Depends(verify_session_or_token)):
     """Return the list of plottable fields with label and unit metadata."""
     return VIZ_FIELD_META
 
@@ -380,7 +381,7 @@ async def get_visualize(
     sample:        int           = Query(default=1,  ge=1, le=3600),
     smooth:        int           = Query(default=0,  ge=0, le=300),
     filter_spikes: bool          = Query(default=True),
-    user:          str           = Depends(verify_session),
+    user:          str           = Depends(verify_session_or_token),
 ):
     """
     Time-series data for the Visualize tab.
@@ -396,7 +397,7 @@ async def get_visualize(
     )
 
 @app.get("/api/data/download")
-async def download_db(request: Request, user: str = Depends(verify_session)):
+async def download_db(request: Request, user: str = Depends(verify_session_or_token)):
     """Download the raw SQLite telemetry database file (auth required)."""
     _db_guard()
     await admin_log("DOWNLOAD", "format=sqlite", ip=_client_ip(request))
@@ -407,7 +408,7 @@ async def download_db(request: Request, user: str = Depends(verify_session)):
     )
 
 @app.get("/api/data/download/csv")
-async def download_csv(request: Request, user: str = Depends(verify_session)):
+async def download_csv(request: Request, user: str = Depends(verify_session_or_token)):
     """Download all telemetry rows as a CSV file (auth required)."""
     _db_guard()
     await admin_log("DOWNLOAD", "format=csv", ip=_client_ip(request))
@@ -431,7 +432,7 @@ async def download_csv(request: Request, user: str = Depends(verify_session)):
     )
 
 @app.get("/api/data/download/xlsx")
-async def download_xlsx(request: Request, user: str = Depends(verify_session)):
+async def download_xlsx(request: Request, user: str = Depends(verify_session_or_token)):
     """Download all telemetry rows as an Excel file (auth required)."""
     _db_guard()
     await admin_log("DOWNLOAD", "format=xlsx", ip=_client_ip(request))
@@ -495,11 +496,11 @@ def _settings_snapshot() -> dict:
     }
 
 @app.get("/api/settings")
-async def get_settings(user: str = Depends(verify_session)):
+async def get_settings(user: str = Depends(verify_session_or_token)):
     return _settings_snapshot()
 
 @app.patch("/api/settings")
-async def update_settings(request: Request, body: SettingsUpdate, user: str = Depends(verify_session)):
+async def update_settings(request: Request, body: SettingsUpdate, user: str = Depends(verify_session_or_token)):
     ip = _client_ip(request)
     changed: list = []
 
@@ -556,7 +557,7 @@ async def update_settings(request: Request, body: SettingsUpdate, user: str = De
     return _settings_snapshot()
 
 @app.delete("/api/settings/{key}")
-async def reset_setting(key: str, request: Request, user: str = Depends(verify_session)):
+async def reset_setting(key: str, request: Request, user: str = Depends(verify_session_or_token)):
     _restorable = {"read_interval", "data_man", "sim_mode", "token_expire_hours"}
     if key not in _restorable:
         raise HTTPException(status_code=404, detail=f"Unknown or non-resettable setting: {key}")
@@ -598,6 +599,51 @@ async def change_password(request: Request, body: PasswordChange, user: str = De
     return {"message": "Password updated"}
 
 
+# API tokens — for authenticating to the API from outside the browser.
+#
+# Management endpoints (create/list/revoke) intentionally require a real
+# session cookie, NOT a bearer token — otherwise a leaked token could be used
+# to mint further tokens or revoke the admin's own, escalating a single leak
+# into permanent persistence. A token is good for data/control-plane access
+# only, never for managing the token store itself.
+
+@app.post("/api/tokens")
+async def create_token_route(request: Request, body: TokenCreateRequest, user: str = Depends(verify_session)):
+    ip = _client_ip(request)
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Token name is required")
+    if body.expires_in_hours is not None and not (1 <= body.expires_in_hours <= 8760):
+        raise HTTPException(status_code=400, detail="expires_in_hours must be 1–8760 (or omitted for no expiry)")
+
+    token_id, raw_token = await asyncio.to_thread(create_api_token, name, body.expires_in_hours)
+    await admin_log(
+        "TOKEN_CREATED",
+        f"id={token_id} name={name} expires_in_hours={body.expires_in_hours or 'never'}",
+        ip=ip,
+    )
+    return {
+        "id": token_id,
+        "name": name,
+        "token": raw_token,
+        "message": "Save this token now — it will not be shown again.",
+    }
+
+
+@app.get("/api/tokens")
+async def list_tokens_route(user: str = Depends(verify_session)):
+    return {"tokens": await asyncio.to_thread(list_api_tokens)}
+
+
+@app.delete("/api/tokens/{token_id}")
+async def revoke_token_route(token_id: int, request: Request, user: str = Depends(verify_session)):
+    revoked = await asyncio.to_thread(revoke_api_token, token_id)
+    if not revoked:
+        raise HTTPException(status_code=404, detail="Token not found")
+    await admin_log("TOKEN_REVOKED", f"id={token_id}", ip=_client_ip(request))
+    return {"message": "Token revoked"}
+
+
 # Power profile
 
 @app.get("/api/power-profile")
@@ -606,21 +652,21 @@ async def get_power_profile(_=Depends(require_controller)):
     return {"profile": await loop.run_in_executor(None, check_power_profile)}
 
 @app.post("/api/performance-mode")
-async def set_performance(request: Request, user: str = Depends(verify_session), _=Depends(require_real_controller)):
+async def set_performance(request: Request, user: str = Depends(verify_session_or_token), _=Depends(require_real_controller)):
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, set_power_profile, "performance")
     await admin_log("POWER_PROFILE", "profile=performance", ip=_client_ip(request))
     return {"profile": result}
 
 @app.post("/api/power-saver-mode")
-async def set_power_saver(request: Request, user: str = Depends(verify_session), _=Depends(require_real_controller)):
+async def set_power_saver(request: Request, user: str = Depends(verify_session_or_token), _=Depends(require_real_controller)):
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, set_power_profile, "power-saver")
     await admin_log("POWER_PROFILE", "profile=power-saver", ip=_client_ip(request))
     return {"profile": result}
 
 @app.post("/api/balanced")
-async def set_balanced(request: Request, user: str = Depends(verify_session), _=Depends(require_real_controller)):
+async def set_balanced(request: Request, user: str = Depends(verify_session_or_token), _=Depends(require_real_controller)):
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, set_power_profile, "balanced")
     await admin_log("POWER_PROFILE", "profile=balanced", ip=_client_ip(request))
@@ -638,7 +684,7 @@ async def get_controller_params(_=Depends(require_controller)):
 async def update_controller_params(
     request: Request,
     body: ControllerParamsUpdate,
-    user: str = Depends(verify_session),
+    user: str = Depends(verify_session_or_token),
     _=Depends(require_real_controller),
 ):
     loop = asyncio.get_running_loop()
@@ -657,7 +703,7 @@ async def get_controller_status(_=Depends(require_controller)):
     return await loop.run_in_executor(None, read_controller_status)
 
 @app.post("/api/controller/rtc/sync")
-async def sync_rtc(request: Request, user: str = Depends(verify_session), _=Depends(require_real_controller)):
+async def sync_rtc(request: Request, user: str = Depends(verify_session_or_token), _=Depends(require_real_controller)):
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, lambda: config.CONTROLLER.set_rtc(datetime.now()))
     await admin_log("RTC_SYNC", ip=_client_ip(request))

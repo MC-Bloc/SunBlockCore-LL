@@ -29,6 +29,7 @@ Current controls:
 
 - bcrypt password hashing (cost factor 12)
 - JWT sessions stored in HttpOnly, SameSite=Strict cookies
+- API bearer tokens (SHA-256 hashed, configurable expiry, revocable) for external/programmatic access
 - Secret admin login path (not guessable by bots)
 - Per-request Content Security Policy with nonce — blocks injected scripts
 - Per-IP rate limiting on login and all data endpoints
@@ -59,6 +60,25 @@ Transport:    HttpOnly cookie, SameSite=Strict
 `SameSite=Strict` prevents the cookie from being sent on cross-site requests, providing CSRF protection without a separate CSRF token.
 
 `HttpOnly` prevents JavaScript from reading the cookie, mitigating XSS-based token theft.
+
+### API tokens (external/programmatic access)
+
+Browser sessions use cookies, which aren't usable from scripts, cron jobs, or external dashboards. For that, the admin panel (Settings → API Tokens) can generate **bearer tokens**:
+
+```
+Generation:   secrets.token_urlsafe(32), prefixed "sbll_"
+Storage:      SHA-256 hash only, in api_tokens (sunblock_settings.db) — raw value never persisted
+Transport:    Authorization: Bearer <token> header
+Expiry:       configurable per token at creation (1 hour – 1 year, or never)
+```
+
+**Why a new table in `sunblock_settings.db` rather than a new database file:** that database already lives at a fixed location independent of `DATA_DIRECTORY`, is already the home for low-write-volume admin/config metadata, and reuses the existing connection-management pattern (`_settings_conn`-style helpers in `db.py`). Proliferating SQLite files for a handful of auth records would add operational overhead with no benefit.
+
+**Why SHA-256 instead of bcrypt for tokens:** bcrypt's deliberate slowness defends against brute-forcing *low-entropy* human passwords. API tokens are 256-bit random strings — already far beyond brute-force range — so a fast cryptographic hash is the correct tool; bcrypt would needlessly slow down every API request.
+
+**Why tokens are bearer-equivalent to a session, but cannot manage tokens:** there is only one admin account (see below), so a token is granted the same data/control-plane access as a logged-in session — creating a second permission tier wasn't requested and would add complexity without a second user to apply it to. The one deliberate exception: `POST/GET/DELETE /api/tokens` and `POST /api/settings/password` always require the actual session cookie, never a bearer token. This means a leaked token can be revoked by the admin and cannot be used to mint replacement tokens, change the password, or revoke the admin's own access — bounding the blast radius of a leak to data/control access, not account takeover.
+
+Token validation also updates `last_used_at` so the admin can spot stale or abandoned tokens and revoke them. Every create/revoke is written to the admin audit log (`TOKEN_CREATED`, `TOKEN_REVOKED`).
 
 ### Secret admin path
 
@@ -103,7 +123,7 @@ Socket.IO upgrades from the same HTTP connection. TLS termination at the proxy c
 | `GET /api/data` | Live readings — public by design |
 | `GET /api/auth/status` | Returns only a boolean |
 
-### Authenticated endpoints (require valid JWT cookie)
+### Authenticated endpoints (session cookie OR API bearer token — `verify_session_or_token`)
 
 | Endpoint | Notes |
 |---|---|
@@ -116,7 +136,14 @@ Socket.IO upgrades from the same HTTP connection. TLS termination at the proxy c
 | `GET /api/settings` | Runtime config |
 | `PATCH /api/settings` | Mutate settings |
 | `DELETE /api/settings/{key}` | Reset to `.env` |
-| `POST /api/settings/password` | Change password |
+| `POST/PUT /api/performance-mode`, `/api/power-saver-mode`, `/api/balanced`, `/api/controller/parameters`, `/api/controller/rtc/sync` | Hardware control — also gated by `require_real_controller` |
+
+### Session-only endpoints (`verify_session` — bearer tokens rejected)
+
+| Endpoint | Why session-only |
+|---|---|
+| `POST /api/settings/password` | Sensitive account change — requires an interactive, re-authenticatable session |
+| `POST /api/tokens`, `GET /api/tokens`, `DELETE /api/tokens/{id}` | Token management — prevents a leaked token from minting replacements or revoking others (see "API tokens" above) |
 
 ### Hardware-gated endpoints
 
@@ -255,6 +282,7 @@ The audit log is append-only at the application level. For tamper-evident loggin
 | `ADMIN_PASSWORD_HASH` | `.env` / `sunblock_settings.db` | Enables offline brute-force of the admin password |
 | `ADMIN_PATH` | `.env` | Reveals the admin login URL; enables targeted login brute-force |
 | `ADMIN_USERNAME` | `.env` | Low risk alone; reduces brute-force search space |
+| API tokens (`sbll_...`) | Shown once at creation; never persisted in raw form | Grants the same data/control-plane access as an admin session until revoked or expired — treat like a password |
 
 ### `.env` security
 
@@ -264,7 +292,7 @@ The `SECRET_KEY` default value (`changeme-secret-key`) is intentionally weak to 
 
 ### `sunblock_settings.db`
 
-This file can contain the `admin_password_hash` key (after a password change via the panel). Protect it:
+This file can contain the `admin_password_hash` key (after a password change via the panel) and the `api_tokens` table (SHA-256 hashes only — never raw tokens). Protect it:
 
 ```bash
 chmod 600 /opt/sunblock/data/sunblock_settings.db
@@ -412,6 +440,7 @@ Before exposing SunBlockCore-LL outside a trusted local network:
 - [ ] Terminate TLS at a reverse proxy; proxy WebSocket upgrade headers
 - [ ] Restrict port 3707 at the firewall to trusted IP ranges
 - [ ] Set `chmod 600` on `.env`, `sunblock_settings.db`, `SunBlockAdminAudit.txt`
+- [ ] Give each external integration its own named API token with the shortest expiry that's practical, and revoke tokens that are no longer in use (Settings → API Tokens)
 - [ ] Add a SQLite WAL-mode `PRAGMA` if write rate is increased significantly
 - [ ] Create an index on `solardata(Timestamp)` if the dataset exceeds ~5M rows
 - [ ] Consider forwarding `SunBlockAdminAudit.txt` to a remote syslog for tamper resistance

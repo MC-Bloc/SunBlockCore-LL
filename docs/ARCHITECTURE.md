@@ -232,6 +232,21 @@ Simple key-value store. Booleans are serialised as the strings `"true"` / `"fals
 | `token_expire_hours` | integer string | JWT session lifetime |
 | `admin_password_hash` | bcrypt hash string | Hashed admin password |
 
+### `api_tokens` — external API authentication
+
+```sql
+CREATE TABLE api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,        -- NULL = never expires
+    last_used_at TEXT
+);
+```
+
+Lives in the same `sunblock_settings.db` rather than a dedicated database file or the telemetry DB — see "API token design rationale" below for why. Created lazily by `db._tokens_conn()`, following the exact `_settings_conn()` pattern (connection-per-call, `CREATE TABLE IF NOT EXISTS`, try/finally close).
+
 ### Log files
 
 | File | Written by | Contents |
@@ -266,12 +281,33 @@ POST /api/login  (rate-limited: 5 req/min/IP)
   └─ Set-Cookie: sb_session=<jwt>; HttpOnly; SameSite=Strict; Secure (if configured)
   └─ admin_log("LOGIN" | "LOGIN_FAILED", user=..., ip=...)
 
-Subsequent requests
+Subsequent requests (browser)
   └─ Cookie: sb_session=<jwt>
   └─ verify_session() dependency ── FastAPI Depends
        └─ jwt.decode → validate sub == ADMIN_USERNAME
        └─ raise 401 if missing/expired/invalid
+
+Subsequent requests (external API client)
+  └─ Authorization: Bearer sbll_<token>
+  └─ verify_session_or_token() dependency ── FastAPI Depends
+       └─ tries the sb_session cookie first (browser path, above)
+       └─ else: hashes the bearer token (SHA-256) and looks it up in api_tokens
+       └─ rejects if hash not found, or expires_at has passed (and lazily deletes it)
+       └─ records last_used_at, returns ADMIN_USERNAME
+       └─ raise 401 if neither credential is valid
 ```
+
+### API token design rationale
+
+The admin panel (Settings → API Tokens) lets the admin generate bearer tokens for scripts, dashboards, and other external clients that can't hold a session cookie. Three decisions were made explicitly, each with a one-line reason:
+
+| Decision | Reasoning |
+|---|---|
+| **Storage: new `api_tokens` table in the existing `sunblock_settings.db`**, not a new database file | That DB already sits at a fixed location independent of `DATA_DIRECTORY`, already holds low-write-volume admin/config metadata, and reuses the established `_settings_conn()`-style connection pattern. A new file would add an operational artifact for no benefit; the high-volume telemetry DB is the wrong home for auth records. |
+| **Hashing: SHA-256 of the raw token**, not bcrypt | Tokens are generated with `secrets.token_urlsafe(32)` — 256 bits of entropy, already far beyond brute-force range. bcrypt's deliberate slowness exists to defend *low-entropy human passwords*; applying it here would only slow down every API request without adding real protection. The raw token is shown to the admin exactly once, at creation, and is never persisted. |
+| **Scope: token = full session-equivalent access, except token/password management**, not a separate permission tier | There is a single admin account (see "Single admin account" in `docs/SECURITY.md`) — a multi-tier permission system would add complexity with no second principal to apply it to. The one carve-out: `POST/GET/DELETE /api/tokens` and `POST /api/settings/password` always require the real session cookie (`verify_session`, not `verify_session_or_token`). This bounds a leaked token's blast radius — it can read/write data and control hardware, but cannot mint replacement tokens, see/revoke other tokens, or change the admin password, so the legitimate admin always retains the ability to shut it down. |
+
+`POST /api/tokens` returns the raw value once (`{id, name, token, message}`); `GET /api/tokens` returns metadata only (id, name, created_at, expires_at, last_used_at — never the hash or raw value); `DELETE /api/tokens/{id}` deletes the row immediately, taking effect on the next request. All three actions are written to the admin audit log (`TOKEN_CREATED`, `TOKEN_REVOKED`).
 
 ### Secret admin login path
 
@@ -295,10 +331,11 @@ The admin login page is only reachable at `/<ADMIN_PATH>` where `ADMIN_PATH` is 
 | Category | Auth required | Examples |
 |---|---|---|
 | Public live view | No | `GET /api/data`, `GET /` |
-| Historical / analysis data | Yes (JWT cookie) | `GET /api/data/history`, `GET /api/data/visualize` |
-| Exports | Yes | `GET /api/data/download/*` |
-| Configuration writes | Yes | `PATCH /api/settings`, `POST /api/settings/password` |
-| Hardware writes | Yes + real controller | `PUT /api/controller/parameters`, `POST /api/performance-mode` |
+| Historical / analysis data | Yes (cookie or API token) | `GET /api/data/history`, `GET /api/data/visualize` |
+| Exports | Yes (cookie or API token) | `GET /api/data/download/*` |
+| Configuration writes | Yes (cookie or API token) | `PATCH /api/settings` |
+| Hardware writes | Yes (cookie or API token) + real controller | `PUT /api/controller/parameters`, `POST /api/performance-mode` |
+| Account / token management | **Session cookie only** — bearer tokens rejected | `POST /api/settings/password`, `POST/GET/DELETE /api/tokens` |
 
 ### Admin audit log
 

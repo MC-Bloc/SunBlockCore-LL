@@ -102,11 +102,23 @@ All files live in `DATA_DIRECTORY` (required — must be set in `.env`, no defau
 | File | Purpose |
 |---|---|
 | `SunBlockCore-LL.db` | Solar telemetry — `solardata` table (12 columns) |
-| `sunblock_settings.db` | Runtime settings — `settings(key TEXT PK, value TEXT)` |
+| `sunblock_settings.db` | Runtime settings — `settings(key TEXT PK, value TEXT)` and `api_tokens` (hashed bearer tokens for external API access) |
 | `SunBlockCoreLogs.txt` | Application log (startup, errors, polling events) |
 | `SunBlockAdminAudit.txt` | Admin audit log — every write action with timestamp + IP |
 
 Exception: `sunblock_settings.db` may also live next to the source files before `DATA_DIRECTORY` is configured (see `config.py` for the bootstrapping logic).
+
+**`api_tokens` schema** (in `sunblock_settings.db`, created lazily by `db._tokens_conn()`):
+```sql
+CREATE TABLE api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,   -- SHA-256 of the raw token; raw value never stored
+    created_at TEXT NOT NULL,
+    expires_at TEXT,                   -- NULL = never expires
+    last_used_at TEXT
+);
+```
 
 **Telemetry schema:**
 ```sql
@@ -137,7 +149,10 @@ CREATE TABLE solardata (
 | GET | `/api/data/download/xlsx` | **Yes** | XLSX export |
 | GET/PATCH | `/api/settings` | **Yes** | Get/update runtime settings |
 | DELETE | `/api/settings/{key}` | **Yes** | Reset setting to .env value |
-| POST | `/api/settings/password` | **Yes** | Change admin password |
+| POST | `/api/settings/password` | Session only | Change admin password |
+| POST | `/api/tokens` | Session only | Generate an API bearer token (raw value shown once) |
+| GET | `/api/tokens` | Session only | List API tokens (metadata only) |
+| DELETE | `/api/tokens/{id}` | Session only | Revoke an API token |
 | GET | `/api/power-profile` | Controller* | Current power profile |
 | GET | `/api/controller/parameters` | Controller* | Battery/charge config |
 | PUT | `/api/controller/parameters` | **Yes**+HW | Write battery/charge config |
@@ -148,6 +163,8 @@ CREATE TABLE solardata (
 | POST | `/api/login` | Rate-limited (5/min) | Set JWT cookie |
 | POST | `/api/logout` | No | Clear cookie |
 
+**Yes** = `Depends(verify_session_or_token)` — accepts either the JWT session cookie or an `Authorization: Bearer <sbll_...>` API token (Settings → API Tokens; see `auth.verify_session_or_token`).
+**Session only** = `Depends(verify_session)` — cookie required, bearer tokens deliberately rejected (password change and token management itself; prevents a leaked token from escalating to full account takeover).
 *Controller = requires controller OR sim mode active  
 Rate limits are per IP, enforced by slowapi.
 
@@ -190,6 +207,7 @@ Tab panels use `x-show` (not `x-if`) — DOM is retained between switches so cha
 - Rate limiting on login (5/min) and data endpoints (20–60/min)
 - `data_directory` validated with `_validate_data_directory()` — resolves symlinks, rejects system paths
 - All data endpoints (history, visualize, downloads) require auth
+- API bearer tokens (`auth.verify_session_or_token`) let external scripts authenticate without a session cookie — generated/revoked from Settings → API Tokens, hashed with SHA-256 in `api_tokens` (never stored raw), with configurable expiry
 - Every write action logged to `SunBlockAdminAudit.txt` with IP
 
 See `docs/SECURITY.md` for the full security model.
