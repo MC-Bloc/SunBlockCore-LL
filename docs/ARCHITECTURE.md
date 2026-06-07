@@ -351,13 +351,14 @@ The UI is a **single-page application** rendered by a single Jinja2 template (`i
 
 ### Server-side bootstrap
 
-Five values are baked into the page at render time via Jinja2:
+Six values are baked into the page at render time via Jinja2:
 
 ```html
 <div x-data='sunblock(
   {{ is_authenticated | tojson }},
   {{ sim_mode         | tojson }},
   {{ env_defaults     | tojson }},
+  {{ data_directory   | tojson }},
   {{ admin_mode       | tojson }},
   {{ viz_fields       | tojson }}
 )'>

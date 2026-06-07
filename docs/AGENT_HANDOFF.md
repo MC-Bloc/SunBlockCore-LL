@@ -138,6 +138,7 @@ CREATE TABLE solardata (
 | GET/PATCH | `/api/settings` | **Yes** | Get/update runtime settings |
 | DELETE | `/api/settings/{key}` | **Yes** | Reset setting to .env value |
 | POST | `/api/settings/password` | **Yes** | Change admin password |
+| GET | `/api/power-profile` | Controller* | Current power profile |
 | GET | `/api/controller/parameters` | Controller* | Battery/charge config |
 | PUT | `/api/controller/parameters` | **Yes**+HW | Write battery/charge config |
 | GET | `/api/controller/stats` | Controller* | Energy stats |

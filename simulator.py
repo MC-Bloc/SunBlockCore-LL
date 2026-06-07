@@ -10,6 +10,7 @@ Drop-in replacement for hardware.parse_data() when SIM_MODE=true.
 
 import random
 from datetime import datetime
+from typing import Optional
 
 
 class _SimState:
@@ -57,7 +58,7 @@ class _SimState:
     ALPHA = 0.35  # exponential smoothing factor
 
     def __init__(self):
-        self._prev: list | None = None
+        self._prev: Optional[list] = None
 
     @staticmethod
     def _interp(hour: int, frac: float) -> tuple:

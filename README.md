@@ -150,6 +150,7 @@ All endpoints return JSON. Write operations and data access require a valid sess
 | PATCH | `/api/settings` | **Yes** | Update settings live |
 | DELETE | `/api/settings/{key}` | **Yes** | Reset setting to `.env` value |
 | POST | `/api/settings/password` | **Yes** | Change admin password |
+| GET | `/api/power-profile` | Controller | Current power profile |
 | GET | `/api/controller/parameters` | Controller | Battery and charge configuration |
 | PUT | `/api/controller/parameters` | **Yes** + HW | Write battery/charge config |
 | GET | `/api/controller/stats` | Controller | Energy statistics |
@@ -196,6 +197,7 @@ All values can be set in `.env`. Persistent overrides written via the admin pane
 | `CONTROLLER_PORT` | `/dev/ttyACM0` | Serial port for the Epever controller |
 | `CONTROLLER_SLAVE` | `1` | Modbus slave ID |
 | `DATA_DIRECTORY` | *(required)* | Directory for DB files and logs |
+| `POWER_DRAW_SCRIPT_ADDR` | *(none)* | Optional path to a script that reports CPU power draw |
 | `DATA_MAN` | `true` | Write readings to SQLite |
 | `READ_INTERVAL` | `1` | Seconds between readings |
 | `SIM_MODE` | `false` | Use simulator instead of hardware |
