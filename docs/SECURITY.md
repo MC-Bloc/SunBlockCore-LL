@@ -98,7 +98,7 @@ Socket.IO upgrades from the same HTTP connection. TLS termination at the proxy c
 
 | Endpoint | Rationale |
 |---|---|
-| `GET /` | HTML page — data cards only, no secrets |
+| `GET /` | Public live view — data cards and rolling charts only. The server renders this page with `admin_mode=False`, so **no admin HTML, login modal, or control tabs are present in the HTML source**. |
 | `GET /api/mode` | Non-sensitive status |
 | `GET /api/data` | Live readings — public by design |
 | `GET /api/auth/status` | Returns only a boolean |

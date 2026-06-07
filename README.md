@@ -34,6 +34,7 @@ Epever MPPT Charge Controller
 - **Energy statistics** — today / this month / this year / all-time generated and consumed kWh
 - **Runtime settings** — change poll interval, toggle data logging, toggle simulator, adjust session expiry — all live, all persistent across restarts
 - **Simulator mode** — generates realistic synthetic data based on 1.28 million rows of real Montreal solar data; no hardware required
+- **Separated public / admin views** — `/` serves only the live feed with no admin HTML in the page; the full admin panel (all tabs, login modal) is served exclusively from the secret `ADMIN_PATH` URL
 - **Secure admin panel** — bcrypt passwords, JWT sessions in HttpOnly cookies, per-request CSP nonces, secret login path, per-IP rate limiting on all data endpoints, admin audit log
 
 ---
@@ -132,8 +133,8 @@ All endpoints return JSON. Write operations and data access require a valid sess
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/` | No | Public live view (data cards + charts only) |
-| GET | `/<ADMIN_PATH>` | No | Admin login entry-point (path is secret) |
+| GET | `/` | No | Public live view — data cards and rolling charts only; no admin HTML in page |
+| GET | `/<ADMIN_PATH>` | No | Full admin panel — all tabs, login modal; path is secret |
 | GET | `/api/mode` | No | `{mode: "simulator"\|"live"}` |
 | POST | `/api/login` | No (5 req/min) | Authenticate — sets HttpOnly session cookie |
 | POST | `/api/logout` | No | Clear session cookie |

@@ -190,9 +190,10 @@
     </div>
   </header>
 
-  <!-- Tabs — admin-only tabs hidden when not logged in -->
+  <!-- Tabs -->
   <nav class="tabs">
-    <div class="tab" :class="tab === 'live'       && 'active'" @click="tab = 'live'">Live</div>
+    <div class="tab" :class="tab === 'live' && 'active'" @click="tab = 'live'">Live</div>
+    {% if admin_mode %}
     <template x-if="authed">
       <div class="tab" :class="tab === 'parameters' && 'active'" @click="switchTab('parameters')">Parameters</div>
     </template>
@@ -208,24 +209,26 @@
     <template x-if="authed">
       <div class="tab" :class="tab === 'settings'   && 'active'" @click="switchTab('settings')">Settings</div>
     </template>
+    {% endif %}
   </nav>
 
   <!-- ══ LIVE ══ -->
   <div class="panel" x-show="tab === 'live'">
 
-    <!-- Admin toolbar (logout) — only visible when logged in -->
+    {% if admin_mode %}
+    <!-- Admin toolbar (logout) -->
     <div class="admin-bar" x-show="authed">
       <span style="color:var(--green)">🔓 Logged in</span>
       <button class="btn btn-muted" @click="doLogout()">Logout</button>
     </div>
 
-    <!-- Data directory warning — admin-only -->
+    <!-- Data directory warning -->
     <div class="setup-banner" x-show="authed && !dataDirectory">
       ⚠ Data directory is not set — data collection and history are disabled.
       <a @click="switchTab('settings')">Configure in Settings →</a>
     </div>
 
-    <!-- Power profile — admin-only -->
+    <!-- Power profile -->
     <div class="profile-card" x-show="authed">
       <div class="profile-header">
         <span class="card-title" style="margin:0">Power Profile</span>
@@ -237,6 +240,7 @@
         <button class="profile-btn" :class="live && live.PowerProfile === 'power-saver' && 'active'" @click="setProfile('power-saver')">Power Saver</button>
       </div>
     </div>
+    {% endif %}
 
     <!-- Data cards — always visible -->
     <div class="grid">
@@ -301,6 +305,7 @@
     </div>
   </div>
 
+  {% if admin_mode %}
   <!-- ══ PARAMETERS ══ -->
   <div class="panel" x-show="tab === 'parameters'">
     <div class="section-actions">
@@ -848,6 +853,7 @@
       </div>
     </div>
   </div>
+  {% endif %}
 
 </div><!-- end x-data -->
 

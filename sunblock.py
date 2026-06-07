@@ -258,8 +258,8 @@ async def index(request: Request):
     })
 
 async def _admin_page(request: Request):
-    """Dedicated admin entry-point — auto-opens login modal (or settings if already authed).
-    Registered at the path set by ADMIN_PATH in .env; not exposed at any predictable URL."""
+    """Full admin panel — all tabs and modals rendered server-side (admin_mode=True).
+    Registered at the secret ADMIN_PATH slug; not exposed at any predictable URL."""
     return _page_response("index.html", {
         "request":          request,
         "is_authenticated": check_session(request),

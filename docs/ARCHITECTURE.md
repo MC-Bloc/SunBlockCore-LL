@@ -103,7 +103,8 @@ db.py            ← SQLite helpers: logging, audit log, solar data r/w, setting
 hardware.py      ← Epever controller: parse_data, read_controller_*, apply_*, power profiles
 simulator.py     ← _SimState class: synthetic data generation from real baselines
 templates/
-  index.html     ← Single-page Alpine.js app (Live, Parameters, Energy, Settings, History, Visualize)
+  index.html     ← Single Jinja2 template; renders as public live view (Live tab only) or full
+                    admin panel (all tabs) depending on the admin_mode context variable
   404.html       ← Custom 404 page
 public/
   vendor/        ← Vendored JS (Socket.IO, Alpine.js, Plotly basic bundle ~1MB)
@@ -364,13 +365,19 @@ Five values are baked into the page at render time via Jinja2:
 
 **Important**: the `x-data` attribute uses single quotes so that the JSON double quotes from `tojson` are safe inside it. Double-quoting `x-data` would break on the first `"` in the JSON output.
 
-`admin_mode` is `True` when the page is served from the secret `ADMIN_PATH` route; it auto-opens the login modal for unauthenticated visitors.
+`admin_mode` is `True` when the page is served from the secret `ADMIN_PATH` route. It controls both Jinja2 server-side rendering (which HTML blocks are included) and Alpine.js behaviour (auto-open login modal for unauthenticated visitors).
 
 `viz_fields` is the `VIZ_FIELD_META` dict from `db.py` — it populates the variable-picker checkboxes in the Visualize tab without an extra API round-trip.
 
 ### Access tiers
 
-The Live tab's public view shows only data cards and static Plotly charts. All other tabs (`Parameters`, `Energy`, `Settings`, `History`, `Visualize`) are wrapped in `<template x-if="authed">` and are never rendered until the user has authenticated. The `switchTab()` method enforces this client-side as a UX guard; the real enforcement is server-side (401 on all data endpoints).
+There are two distinct page variants rendered from the same `index.html` template, controlled by the server-side `admin_mode` Jinja2 variable:
+
+**Public live view (`GET /`)** — `admin_mode=False`
+Only the Live tab is present in the rendered HTML. Admin panels (Parameters, Energy, Settings, History, Visualize), the login/edit-params modals, the logout toolbar, the power-profile switcher, and the data-directory warning are excluded from the HTML entirely by Jinja2 `{% if admin_mode %}` guards. The browser receives a page that contains only the live data cards, rolling charts, and Socket.IO connection logic.
+
+**Admin panel (`GET /<ADMIN_PATH>`)** — `admin_mode=True`
+The full page is rendered: all six tabs, both modals, all admin controls. Admin tabs (`Parameters`, `Energy`, `Settings`, `History`, `Visualize`) are additionally wrapped in Alpine `<template x-if="authed">` so they appear in the DOM only after a successful login. The `switchTab()` method provides a UX guard; the real data protection is server-side (401 on all data endpoints).
 
 ### Real-time updates
 
@@ -390,7 +397,7 @@ All charts use **Plotly.js basic bundle** (vendored at `public/vendor/plotly.min
 
 ### Tab architecture
 
-Six tabs share a single Alpine component instance. Each tab's data is fetched lazily on first visit. Panels use `x-show` (not `x-if`) so DOM is retained between tab switches — charts don't need to be re-initialised.
+Six tabs share a single Alpine component instance in admin mode; the public view has only the Live tab. Each tab's data is fetched lazily on first visit. Panels use `x-show` (not `x-if`) so DOM is retained between tab switches — charts don't need to be re-initialised.
 
 ---
 
