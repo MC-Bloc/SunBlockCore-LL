@@ -271,6 +271,16 @@ All authenticated API access required a browser session cookie (`sb_session`). E
 
 SunBlockCore-LL has exactly one admin account (see `docs/SECURITY.md` — "Single admin account"). Building a scoped/role-based token system would add real complexity (token scopes, permission checks on every route, UI for configuring them) with no second principal to apply it to. Granting tokens session-equivalent access — minus self-management — gets external integrations working with the simplest model that actually matches the deployment reality, while still capping the damage a leak can do.
 
+### Pre-made systemd unit files (`Systemd/`)
+
+Added a `Systemd/` directory at the repo root mirroring the layout and conventions of the original [MC-Bloc/SunBlock/Systemd](https://github.com/MC-Bloc/SunBlock/tree/main/Systemd) scripts (`SB_RunSunBlockCore.service`/`.sh`, `SB_RunSunBlockExpress.service`/`.sh`):
+
+- **`SB_RunSunBlockCore-LL.service`** — systemd unit (`User=pc`, `Restart=on-failure` with burst limiting, `WantedBy=default.target`, `EnvironmentFile=` for `.env`)
+- **`SB_RunSunBlockCore-LL.sh`** — launcher script that `cd`s into the repo and execs `.venv/bin/uvicorn sunblock:socket_app`; goes in `/usr/local/bin/`
+- **`README.md`** — install/troubleshooting steps in the same style as the original
+
+Because SunBlockCore-LL is a single unified ASGI app (FastAPI + python-socketio), only **one** service is needed where the original SunBlockCore + SunBlockExpress split required two. This is a manual-install alternative to `scripts/deploy.sh` (which generates and installs an equivalent unit automatically) — useful for operators who prefer to wire things up by hand, or who are migrating an existing systemd setup from the original two-service layout. `docs/DEPLOYMENT.md`, `docs/ARCHITECTURE.md`, `docs/AGENT_HANDOFF.md`, and the root `README.md` were all updated to reference it.
+
 ---
 
 ## Summary of All API Endpoints (current)
@@ -333,4 +343,5 @@ SunBlockCore-LL has exactly one admin account (see `docs/SECURITY.md` — "Singl
 | `sample.env` | 2, 8 | SIM_MODE, ADMIN_PATH, cleanup |
 | `scripts/deploy.sh` | early, 8 | systemd deployment; ADMIN_PATH generation; openpyxl |
 | `scripts/vendor.sh` | 8 | uPlot → Plotly basic bundle |
+| `Systemd/` | 9 | Created: pre-made systemd unit + launcher (`SB_RunSunBlockCore-LL.service`/`.sh`) + README, mirroring MC-Bloc/SunBlock/Systemd conventions |
 | `.gitignore` | 8 | Added *.db, demo_data/, *.xlsx |

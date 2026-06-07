@@ -117,6 +117,14 @@ If the dashboard loads and the controller connects, press `Ctrl+C` and proceed t
 
 ## 5. Run as a systemd Service
 
+> **Shortcut:** `Systemd/` in the repo root ships ready-made unit + launcher
+> scripts (`SB_RunSunBlockCore-LL.service` / `.sh`) that produce an equivalent
+> service to the steps below — see `Systemd/README.md` for copy-paste install
+> instructions. Use those if you'd rather not hand-write the unit file, or if
+> you're migrating an existing systemd setup from the original
+> SunBlockCore/SunBlockExpress two-service split (this single ASGI app
+> replaces both).
+
 Create the service file:
 
 ```bash

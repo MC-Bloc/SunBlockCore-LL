@@ -112,6 +112,10 @@ scripts/
   deploy.sh      ← Ubuntu deployment automation
   gen_password_hash.py
   vendor.sh      ← Downloads and pins all frontend vendor assets
+Systemd/
+  SB_RunSunBlockCore-LL.service ← pre-made systemd unit (alternative to deploy.sh's auto-generated one)
+  SB_RunSunBlockCore-LL.sh      ← launcher script; goes in /usr/local/bin/
+  README.md      ← manual install + troubleshooting steps
 ```
 
 ### The `config.py` shared-state pattern
@@ -526,3 +530,22 @@ The deployment script (`scripts/deploy.sh`) automates:
 - Enabling and starting the service
 
 **Port 3707** is the production default (configurable via `.env` `PORT`).
+
+### Pre-made systemd unit files (`Systemd/`)
+
+For operators who prefer to install the service by hand, or who are migrating
+from the original SunBlock project's two-process layout, `Systemd/` ships
+ready-made files that mirror what `deploy.sh` generates:
+
+```
+Systemd/SB_RunSunBlockCore-LL.service  ← systemd unit (mirrors sunblock.service above)
+Systemd/SB_RunSunBlockCore-LL.sh       ← launcher script; cd's to the repo and execs uvicorn
+Systemd/README.md                      ← copy-paste install + troubleshooting steps
+```
+
+The `.sh` launcher must be copied to `/usr/local/bin/` (the `.service` file's
+`ExecStart` points there), matching the convention used by the original
+`SB_RunSunBlockCore.sh` / `SB_RunSunBlockExpress.sh` scripts in
+[MC-Bloc/SunBlock/Systemd](https://github.com/MC-Bloc/SunBlock/tree/main/Systemd).
+Because SunBlockCore-LL is a single unified ASGI app, only **one** service is
+needed where the original required two.

@@ -118,6 +118,8 @@ scripts/
   deploy.sh          Automated Ubuntu/systemd deployment
   vendor.sh          Downloads and pins all frontend vendor assets
   gen_password_hash.py
+Systemd/             Pre-made systemd unit + launcher script (manual install alternative
+                       to deploy.sh) — see Systemd/README.md
 docs/
   ARCHITECTURE.md    System design, module layout, all architecture decisions
   DEVELOPMENT_HISTORY.md  Chronological record of all changes
@@ -232,6 +234,8 @@ bash scripts/deploy.sh
 ```
 
 This installs dependencies, generates a random `ADMIN_PATH`, writes a systemd unit file, and starts the service on port 3707. The final output prints both the public URL and the private admin URL.
+
+Prefer to wire up the service by hand, or migrating from the original SunBlock project's `SB_RunSunBlockCore` / `SB_RunSunBlockExpress` two-service systemd setup? `Systemd/` ships ready-made unit + launcher files (`SB_RunSunBlockCore-LL.service` / `.sh`) — see [`Systemd/README.md`](Systemd/README.md) for copy-paste install steps. Only one service is needed since SunBlockCore-LL is a single unified ASGI app.
 
 For HTTPS, terminate TLS at a reverse proxy (nginx, Caddy) and proxy WebSocket upgrade headers.
 

@@ -1,0 +1,18 @@
+[Unit]
+Description=This service runs SunBlockCore-LL -- the FastAPI/Socket.IO solar monitoring and admin server (rewrite of SunBlockCore + SunBlockExpress as a single ASGI app).
+After=network.target
+
+[Service]
+Type=simple
+User=pc
+EnvironmentFile=/home/pc/GitHub/SunBlockCore-LL/.env
+Restart=on-failure
+RestartSec=2
+StartLimitInterval=60
+StartLimitBurst=5
+ExecStart=/usr/local/bin/SB_RunSunBlockCore-LL.sh
+TimeoutStartSec=0
+
+
+[Install]
+WantedBy=default.target

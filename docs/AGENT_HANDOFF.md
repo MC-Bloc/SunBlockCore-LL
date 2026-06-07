@@ -38,6 +38,8 @@ scripts/
   deploy.sh     ← Ubuntu/systemd deployment automation
   vendor.sh     ← Downloads and pins all frontend vendor assets
   gen_password_hash.py
+Systemd/        ← Pre-made systemd unit + launcher script (manual alternative to deploy.sh);
+                   see Systemd/README.md
 ```
 
 No other Python files contain business logic. No build step. No TypeScript. No React.
@@ -293,7 +295,7 @@ There is currently no automated test suite. Manual testing procedure:
 
 ## Deployment
 
-Production runs on Ubuntu at port 3707 via systemd. See `scripts/deploy.sh`.
+Production runs on Ubuntu at port 3707 via systemd. `scripts/deploy.sh` writes and enables the unit automatically; `Systemd/` ships the same unit + launcher pre-written for manual installs (see `Systemd/README.md`) — useful when migrating from the original SunBlock project's `SB_RunSunBlockCore`/`SB_RunSunBlockExpress` two-service setup, since this single ASGI app replaces both.
 
 ```
 ExecStart=.venv/bin/uvicorn sunblock:socket_app --host 0.0.0.0 --port 3707
