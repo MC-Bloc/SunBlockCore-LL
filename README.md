@@ -34,6 +34,7 @@ Epever MPPT Charge Controller
 - **Energy statistics** — today / this month / this year / all-time generated and consumed kWh
 - **Runtime settings** — change poll interval, toggle data logging, toggle simulator, adjust session expiry — all live, all persistent across restarts
 - **API tokens** — generate revocable bearer tokens with configurable expiry to call the API from outside the browser (scripts, dashboards, automations)
+- **Two-factor authentication (TOTP)** — optional second factor for the admin login (any standard authenticator app), with one-time backup recovery codes
 - **Simulator mode** — generates realistic synthetic data based on 1.28 million rows of real Montreal solar data; no hardware required
 - **Separated public / admin views** — `/` serves only the live feed with no admin HTML in the page; the full admin panel (all tabs, login modal) is served exclusively from the secret `ADMIN_PATH` URL
 - **Secure admin panel** — bcrypt passwords, JWT sessions in HttpOnly cookies, per-request CSP nonces, secret login path, per-IP rate limiting on all data endpoints, admin audit log
@@ -74,7 +75,10 @@ DATA_DIRECTORY=/opt/sunblock/data
 
 # Auth
 ADMIN_PASSWORD_HASH=<bcrypt hash>   # python3 scripts/gen_password_hash.py
-SECRET_KEY=<random 32-byte hex>     # python3 -c "import secrets; print(secrets.token_hex(32))"
+# SECRET_KEY: leave blank — the server generates and persists a random key on
+# first run (survives restarts). Set it explicitly only to pin a known value
+# across multiple instances.
+SECRET_KEY=
 ADMIN_PATH=<random slug>            # python3 -c "import secrets; print(secrets.token_urlsafe(12))"
 
 # Optional
@@ -139,8 +143,9 @@ All endpoints return JSON. Write operations and data access require either a val
 | GET | `/` | No | Public live view — data cards and rolling charts only; no admin HTML in page |
 | GET | `/<ADMIN_PATH>` | No | Full admin panel — all tabs, login modal; path is secret |
 | GET | `/api/mode` | No | `{mode: "simulator"\|"live"}` |
-| POST | `/api/login` | No (5 req/min) | Authenticate — sets HttpOnly session cookie |
-| POST | `/api/logout` | No | Clear session cookie |
+| POST | `/api/login` | No (5 req/min) | Authenticate — sets session cookie, or a short-lived 2FA challenge cookie + `{requires_2fa: true}` if 2FA is enabled |
+| POST | `/api/login/verify-2fa` | No (5 req/min) | Complete login with a TOTP or backup code — exchanges the pending challenge for a session cookie |
+| POST | `/api/logout` | No | Clear session cookie(s) |
 | GET | `/api/auth/status` | No | `{authenticated: bool}` |
 | GET | `/api/data` | No | Current live reading |
 | GET | `/api/data/history` | **Yes** (60 req/min) | Paginated history: `?limit=&offset=&from=&to=&order=` |
@@ -153,6 +158,11 @@ All endpoints return JSON. Write operations and data access require either a val
 | PATCH | `/api/settings` | **Yes** | Update settings live |
 | DELETE | `/api/settings/{key}` | **Yes** | Reset setting to `.env` value |
 | POST | `/api/settings/password` | **Session only** | Change admin password |
+| GET | `/api/2fa/status` | **Session only** | `{enabled, backup_codes_remaining}` |
+| POST | `/api/2fa/setup` | **Session only** | Begin enrollment — returns a pending TOTP secret + `otpauth://` URI for the QR code |
+| POST | `/api/2fa/confirm` | **Session only** | `{code}` — verify the pending secret and activate 2FA; returns one-time backup codes |
+| POST | `/api/2fa/disable` | **Session only** | `{password, code}` — turn 2FA off (requires both factors) |
+| POST | `/api/2fa/backup-codes/regenerate` | **Session only** | `{code}` — invalidate old backup codes and issue 10 new ones |
 | POST | `/api/tokens` | **Session only** | Generate an API token — `{name, expires_in_hours}`; raw token returned once |
 | GET | `/api/tokens` | **Session only** | List API tokens (metadata only — no raw tokens or hashes) |
 | DELETE | `/api/tokens/{id}` | **Session only** | Revoke an API token |
@@ -177,6 +187,15 @@ All endpoints return JSON. Write operations and data access require either a val
    curl -H "Authorization: Bearer sbll_<token>" http://localhost:3707/api/data/history
    ```
 4. Revoke it from the same panel at any time — revocation takes effect immediately.
+
+### Two-factor authentication
+
+1. Log in, open **Settings → Two-Factor Authentication**, and click **Enable**.
+2. Scan the QR code with any TOTP authenticator app (Google Authenticator, Authy, 1Password, …) — or type in the secret manually — then enter the 6-digit code it shows to confirm.
+3. Save the 10 one-time backup codes shown immediately afterward; they're shown exactly once and let you log in if you lose your authenticator device.
+4. From then on, logging in requires the password **and** a current code from the app (or an unused backup code).
+
+Disabling 2FA requires both the current password and a valid code — a leaked session cookie alone can't turn it off.
 
 ### Live Socket.IO
 
@@ -219,7 +238,7 @@ All values can be set in `.env`. Persistent overrides written via the admin pane
 | `SIM_MODE` | `false` | Use simulator instead of hardware |
 | `ADMIN_USERNAME` | `admin` | Admin login username |
 | `ADMIN_PASSWORD_HASH` | *(none)* | bcrypt hash — generate with `scripts/gen_password_hash.py` |
-| `SECRET_KEY` | `changeme-secret-key` | JWT signing key — **must be changed for production** |
+| `SECRET_KEY` | *(auto-generated)* | JWT signing key — leave blank; the server generates and persists a random 256-bit key on first run |
 | `TOKEN_EXPIRE_HOURS` | `24` | Session lifetime in hours |
 | `SECURE_COOKIES` | `false` | Set `true` when running behind HTTPS |
 | `ADMIN_PATH` | *(none)* | Secret URL slug for the admin login page — **set this** |
@@ -279,6 +298,7 @@ epevermodbus
 python-dotenv
 python-jose[cryptography]
 bcrypt
+pyotp
 slowapi
 jinja2
 openpyxl

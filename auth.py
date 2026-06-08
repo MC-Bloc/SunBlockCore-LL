@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import bcrypt as _bcrypt
+import pyotp
 from fastapi import Cookie, Header, HTTPException, Request
 from jose import JWTError, jwt
 from pydantic import BaseModel
@@ -40,6 +41,13 @@ class TokenCreateRequest(BaseModel):
     name: str
     expires_in_hours: Optional[int] = None  # None = never expires
 
+class TwoFACodeRequest(BaseModel):
+    code: str
+
+class TwoFADisableRequest(BaseModel):
+    password: str
+    code: str
+
 
 # ── Rate limiter ──────────────────────────────────────────────────────────────
 
@@ -53,13 +61,61 @@ def create_token(username: str) -> str:
     return jwt.encode({"sub": username, "exp": expire}, config.SECRET_KEY, algorithm="HS256")
 
 
+# ── 2FA helpers ───────────────────────────────────────────────────────────────
+#
+# Login is a two-step process when 2FA is enabled: a correct password alone
+# does not issue a full `sb_session`. Instead it issues a short-lived "pending"
+# token carrying `purpose: "2fa_pending"` — distinct from real sessions so it
+# can never be mistaken for one by `verify_session` (which only accepts tokens
+# without a `purpose` claim matching this marker, see below). The pending token
+# must be exchanged for a real session within PENDING_2FA_MINUTES by presenting
+# a valid TOTP code or backup code via POST /api/login/verify-2fa.
+
+PENDING_2FA_MINUTES = 5
+
+
+def create_pending_2fa_token(username: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=PENDING_2FA_MINUTES)
+    return jwt.encode(
+        {"sub": username, "purpose": "2fa_pending", "exp": expire},
+        config.SECRET_KEY,
+        algorithm="HS256",
+    )
+
+
+def verify_pending_2fa_token(token: Optional[str]) -> Optional[str]:
+    """Return the username if `token` is a valid, unexpired pending-2FA token."""
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, config.SECRET_KEY, algorithms=["HS256"])
+        if payload.get("purpose") == "2fa_pending" and payload.get("sub") == config.ADMIN_USERNAME:
+            return payload["sub"]
+    except JWTError:
+        pass
+    return None
+
+
+def verify_totp_code(code: str) -> bool:
+    """Validate a 6-digit TOTP code against the active secret (±1 time-step skew)."""
+    if not config.TOTP_ENABLED or not config.TOTP_SECRET:
+        return False
+    code = code.strip().replace(" ", "")
+    if not code:
+        return False
+    try:
+        return pyotp.TOTP(config.TOTP_SECRET).verify(code, valid_window=1)
+    except Exception:
+        return False
+
+
 def check_session(request: Request) -> bool:
     session = request.cookies.get("sb_session")
     if not session:
         return False
     try:
         payload = jwt.decode(session, config.SECRET_KEY, algorithms=["HS256"])
-        return payload.get("sub") == config.ADMIN_USERNAME
+        return payload.get("sub") == config.ADMIN_USERNAME and "purpose" not in payload
     except JWTError:
         return False
 
@@ -72,7 +128,11 @@ def verify_session(sb_session: Optional[str] = Cookie(default=None)) -> str:
     try:
         payload = jwt.decode(sb_session, config.SECRET_KEY, algorithms=["HS256"])
         username: str = payload.get("sub")
-        if username != config.ADMIN_USERNAME:
+        # Reject "purpose"-tagged tokens (e.g. 2fa_pending) here — only a fully
+        # authenticated session (password + 2FA, when enabled) may pass this
+        # dependency. Without this check, a leaked pending-2FA token could be
+        # replayed as `sb_session` and skip the second factor entirely.
+        if username != config.ADMIN_USERNAME or "purpose" in payload:
             raise HTTPException(status_code=401, detail="Invalid session")
         return username
     except JWTError:
@@ -91,7 +151,7 @@ def verify_session_or_token(
     if sb_session:
         try:
             payload = jwt.decode(sb_session, config.SECRET_KEY, algorithms=["HS256"])
-            if payload.get("sub") == config.ADMIN_USERNAME:
+            if payload.get("sub") == config.ADMIN_USERNAME and "purpose" not in payload:
                 return payload["sub"]
         except JWTError:
             pass

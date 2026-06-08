@@ -17,4 +17,8 @@ curl -sL https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js -o "$VENDO
 echo "→ Plotly.js 2.35.3 (basic)"
 curl -sL https://cdn.jsdelivr.net/npm/plotly.js-basic-dist-min@2.35.3/plotly-basic.min.js -o "$VENDOR/plotly.min.js"
 
+echo "→ qrcodejs 1.0.0 (renders 2FA enrollment QR codes client-side, so the"
+echo "   TOTP secret never has to be turned into an image on our server)"
+curl -sL https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js -o "$VENDOR/qrcode.min.js"
+
 echo "✓ All vendor files saved to $VENDOR"

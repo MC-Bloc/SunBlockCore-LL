@@ -66,7 +66,7 @@ PORT=3707
 
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD_HASH=        # see step 3
-SECRET_KEY=                 # see step 3
+SECRET_KEY=                 # leave blank — auto-generated and persisted on first run (see step 3)
 TOKEN_EXPIRE_HOURS=24
 SECURE_COOKIES=false        # set true if using HTTPS (see step 7)
 ADMIN_PATH=                 # see step 3 — keep this private
@@ -84,13 +84,7 @@ ADMIN_PATH=                 # see step 3 — keep this private
 
 Paste the output into `ADMIN_PASSWORD_HASH` in `.env`.
 
-**Secret key:**
-
-```bash
-python3 -c "import secrets; print(secrets.token_hex(32))"
-```
-
-Paste the output into `SECRET_KEY` in `.env`.
+**Secret key:** No action needed — leave `SECRET_KEY` blank in `.env`. On first startup the server generates a cryptographically random 256-bit key and persists it to `sunblock_settings.db`, so it survives restarts without forcing a re-login. Only set `SECRET_KEY` explicitly if you need to pin the same signing key across multiple instances.
 
 **Admin path** (secret URL slug for the login page):
 

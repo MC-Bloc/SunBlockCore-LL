@@ -283,6 +283,46 @@ Because SunBlockCore-LL is a single unified ASGI app (FastAPI + python-socketio)
 
 ---
 
+## Session 10 — SECRET_KEY Auto-Generation + Two-Factor Authentication
+
+Triggered by the operator's plan — a publicly-reachable admin panel that controls real solar hardware is a meaningfully higher-stakes deployment, so two defense-in-depth gaps were closed before launch.
+
+### Part 1 — `SECRET_KEY` is now always randomly generated, never a static placeholder
+
+**Problem:** `config.py` fell back to the literal string `"changeme-secret-key"` if `SECRET_KEY` wasn't set in `.env`. An attacker who knew this well-documented default could forge arbitrary admin JWT sessions outright — this was tracked as **SEC-001 (High)**.
+
+**Fix — persist-once-and-reuse, mirroring the existing `admin_password_hash` pattern exactly:**
+- `config.py`: `SECRET_KEY` now defaults to `""` — no static fallback exists at all.
+- `db.load_settings()`: after applying `.env` and any persisted value, if `config.SECRET_KEY` is still empty it generates one with `secrets.token_hex(32)` (256 bits), assigns it, persists it via `save_setting("secret_key", ...)`, and logs an informational startup message. Added `"secret_key"` to the `_apply` dict so a previously generated key loads automatically on every subsequent boot.
+- `sunblock.py`: removed the now-impossible `if config.SECRET_KEY in ("changeme-secret-key", ""):` startup warning — dead code once the weak default can't exist.
+
+**Why persist instead of regenerating on every restart:** a fresh key on every boot would silently invalidate every admin session — and, with 2FA now in the picture, every in-flight pending-2FA challenge — on every restart. That's a serious, surprising availability problem for an operator who isn't expecting forced re-logins. Persisting the generated key makes it behave exactly like an operator-supplied one: stable across restarts, rotatable on demand by deleting the `secret_key` row from `sunblock_settings.db`.
+
+**Verified:** fresh start generates and persists a 64-char hex key; a simulated restart (re-running `load_settings()`) loads the *identical* key back — sessions survive restarts. SEC-001 is now marked **Resolved** in `docs/SECURITY.md`.
+
+### Part 2 — Two-factor authentication (TOTP)
+
+**Problem:** the admin account had exactly one factor (a password). On a publicly-reachable, hardware-controlling dashboard, a guessed/phished/reused password is a complete compromise.
+
+**Solution — standard TOTP second factor via `pyotp`, with one-time backup recovery codes:**
+
+- **Storage** — `totp_secret`/`totp_enabled` keys in the existing `sunblock_settings.db` `settings` table (mirrors `admin_password_hash` — no env fallback, since 2FA must start disabled until the admin explicitly enrolls); a new `backup_codes` table (`id, code_hash UNIQUE, created_at, used_at` — mirrors `api_tokens`: SHA-256 hashes only, raw codes shown once).
+- **Two-step enrollment** — `POST /api/2fa/setup` generates a random base32 secret held *only in memory* (`sunblock._pending_totp_secret`, never written to disk) and returns an `otpauth://` URI for a client-rendered QR code; `POST /api/2fa/confirm {code}` verifies a code against that pending secret *before* persisting anything, then activates 2FA and returns 10 one-time backup codes. This ordering means a typo'd secret or misconfigured app can never lock the admin out — a failed confirmation simply changes nothing.
+- **Two-step login** — when `TOTP_ENABLED`, `POST /api/login` no longer issues `sb_session` on a correct password. It instead issues a short-lived (5 min) JWT carrying `purpose: "2fa_pending"` in its own cookie (`sb_2fa_pending`) and responds `{requires_2fa: true}`. The new `POST /api/login/verify-2fa` (rate-limited 5/min, same as `/api/login`) validates that pending token plus a TOTP code or backup code, then issues the real session. **Critical hardening:** `verify_session`, `check_session`, and `verify_session_or_token` were all updated to reject any token carrying a `purpose` claim — without this, a captured pending token could simply be replayed as `sb_session` and skip the second factor entirely.
+- **Disable** — `POST /api/2fa/disable {password, code}` requires *both* factors, exactly mirroring `change_password`'s defense-in-depth: a hijacked session alone must not be able to strip the account's strongest protection.
+- **Backup codes** — `POST /api/2fa/backup-codes/regenerate {code}` invalidates and reissues all 10; the admin is warned in the application log when ≤2 unused codes remain.
+- **Audit logging** — new action names: `2FA_SETUP_STARTED`, `2FA_ENABLED`, `2FA_DISABLED`, `2FA_DISABLE_FAILED`, `LOGIN_PASSWORD_OK_2FA_PENDING`, `2FA_LOGIN` (`method=totp|backup_code`), `2FA_CHALLENGE_FAILED`, `BACKUP_CODE_USED`, `BACKUP_CODES_REGENERATED`.
+- **Session-only, never bearer-token-eligible** — all `/api/2fa/*` management routes use `Depends(verify_session)`, exactly like `change_password` and API token management. A leaked bearer token must never be able to touch the second factor.
+- **UI** — new "Two-Factor Authentication" card in Settings: status indicator, QR-code enrollment flow (rendered client-side via vendored `qrcodejs`, so the secret never becomes a server-rendered image), one-time backup-code display, regeneration, and a password+code disable form. The login modal gained a second step that prompts for the 2FA code after a correct password.
+- **New vendored asset** — `public/vendor/qrcode.min.js` (qrcodejs 1.0.0), added to `scripts/vendor.sh`.
+- **New dependency** — `pyotp`, added to `requirements.txt`.
+
+**Recovery procedure** — documented in `docs/SECURITY.md`: an operator with filesystem access can disable 2FA directly via `sqlite3` on `sunblock_settings.db` (same class of operation as the existing password-hash recovery path).
+
+**Verified end-to-end with a live server:** enrollment (setup → confirm with a real generated TOTP code → backup codes returned), full two-step login with a correct code, rejection of an incorrect code, login via a backup code (and rejection of its reuse), disable requiring both password and code (and rejection with a wrong password), and confirmed every step appears correctly in the admin audit log.
+
+---
+
 ## Summary of All API Endpoints (current)
 
 | Method | Path | Auth | Description |
@@ -290,8 +330,9 @@ Because SunBlockCore-LL is a single unified ASGI app (FastAPI + python-socketio)
 | GET | `/` | No | Public live view (data cards only) |
 | GET | `/<ADMIN_PATH>` | No | Admin login entry-point |
 | GET | `/api/mode` | No | `{mode: "simulator"\|"live"}` |
-| POST | `/api/login` | No (5/min) | Set session cookie |
-| POST | `/api/logout` | No | Clear session cookie |
+| POST | `/api/login` | No (5/min) | Set session cookie, or issue a 2FA challenge cookie + `{requires_2fa: true}` |
+| POST | `/api/login/verify-2fa` | No (5/min) | Exchange a pending 2FA challenge + code for a session cookie |
+| POST | `/api/logout` | No | Clear session cookie(s) |
 | GET | `/api/auth/status` | No | `{authenticated: bool}` |
 | GET | `/api/data` | No | Current live reading |
 | GET | `/api/data/history` | **Yes** (60/min) | Paginated historical readings |
@@ -304,6 +345,11 @@ Because SunBlockCore-LL is a single unified ASGI app (FastAPI + python-socketio)
 | PATCH | `/api/settings` | **Yes** | Update one or more settings |
 | DELETE | `/api/settings/{key}` | **Yes** | Reset setting to .env value |
 | POST | `/api/settings/password` | Session only | Change admin password |
+| GET | `/api/2fa/status` | Session only | `{enabled, backup_codes_remaining}` |
+| POST | `/api/2fa/setup` | Session only | Begin 2FA enrollment (pending secret + QR URI) |
+| POST | `/api/2fa/confirm` | Session only | Confirm enrollment, activate 2FA, return backup codes |
+| POST | `/api/2fa/disable` | Session only | Disable 2FA (requires password + code) |
+| POST | `/api/2fa/backup-codes/regenerate` | Session only | Invalidate + reissue backup codes |
 | POST | `/api/tokens` | Session only | Generate an API bearer token (raw value shown once) |
 | GET | `/api/tokens` | Session only | List API tokens (metadata only) |
 | DELETE | `/api/tokens/{id}` | Session only | Revoke an API token |
@@ -332,16 +378,18 @@ Because SunBlockCore-LL is a single unified ASGI app (FastAPI + python-socketio)
 
 | File | Sessions | Key changes |
 |---|---|---|
-| `config.py` | 3, 5, 8 | Module introduced; SETTINGS_DB_NAME, ENV_DEFAULTS, ADMIN_PATH, ADMIN_AUDIT_FILE |
-| `auth.py` | 3, 4, 5, 9 | Module introduced; SettingsUpdate, PasswordChange, TokenCreateRequest models; verify_session_or_token dependency |
-| `db.py` | 3, 5, 7, 8, 9 | Module introduced; settings store, query_history, query_visualize, admin_log, _validate_data_directory, api_tokens store (create/list/revoke/verify) |
+| `config.py` | 3, 5, 8, 10 | Module introduced; SETTINGS_DB_NAME, ENV_DEFAULTS, ADMIN_PATH, ADMIN_AUDIT_FILE; SECRET_KEY default removed (now ""), TOTP_SECRET/TOTP_ENABLED runtime state |
+| `auth.py` | 3, 4, 5, 9, 10 | Module introduced; SettingsUpdate, PasswordChange, TokenCreateRequest, TwoFACodeRequest, TwoFADisableRequest models; verify_session_or_token dependency; pending-2FA JWT helpers (create/verify), verify_totp_code; "purpose" claim rejected by all session-verifying functions |
+| `db.py` | 3, 5, 7, 8, 9, 10 | Module introduced; settings store (now incl. secret_key/totp_secret/totp_enabled + auto-generate-and-persist SECRET_KEY), query_history, query_visualize, admin_log, _validate_data_directory, api_tokens store, backup_codes store (generate/verify-and-consume/count/clear) |
 | `hardware.py` | 3 | Extracted from sunblock.py |
 | `simulator.py` | 2, 3 | Created; extracted to own module |
-| `sunblock.py` | 2–9 | Refactored; all routes, security hardening, rate limits, CSP, audit log calls; API token routes |
-| `templates/index.html` | 4–9 | Settings, History, Visualize tabs; extra charts; auth-gating; CSP nonce; Plotly; API Tokens panel |
+| `sunblock.py` | 2–10 | Refactored; all routes, security hardening, rate limits, CSP, audit log calls; API token routes; two-step login + full /api/2fa/* route set; removed obsolete SECRET_KEY startup warning |
+| `templates/index.html` | 4–10 | Settings, History, Visualize tabs; extra charts; auth-gating; CSP nonce; Plotly; API Tokens panel; Two-Factor Authentication panel + two-step login modal; vendored QR rendering |
 | `templates/404.html` | 8 | Created: custom 404 page |
-| `sample.env` | 2, 8 | SIM_MODE, ADMIN_PATH, cleanup |
+| `sample.env` | 2, 8, 10 | SIM_MODE, ADMIN_PATH, cleanup; SECRET_KEY now documented as optional/auto-generated |
 | `scripts/deploy.sh` | early, 8 | systemd deployment; ADMIN_PATH generation; openpyxl |
-| `scripts/vendor.sh` | 8 | uPlot → Plotly basic bundle |
+| `scripts/vendor.sh` | 8, 10 | uPlot → Plotly basic bundle; added qrcodejs for client-side 2FA QR rendering |
+| `requirements.txt` | 10 | Added pyotp |
+| `public/vendor/qrcode.min.js` | 10 | Vendored qrcodejs 1.0.0 |
 | `Systemd/` | 9 | Created: pre-made systemd unit + launcher (`SB_RunSunBlockCore-LL.service`/`.sh`) + README, mirroring MC-Bloc/SunBlock/Systemd conventions |
 | `.gitignore` | 8 | Added *.db, demo_data/, *.xlsx |

@@ -91,6 +91,8 @@
     .btn-action  { padding: 7px 14px; border-color: var(--border); color: var(--text); font-size: 0.85rem; }
     .btn-action:not([disabled]):hover { border-color: var(--accent); color: var(--accent); }
     .btn-action[disabled] { opacity: 0.4; cursor: not-allowed; }
+    .btn-danger  { padding: 7px 14px; border: 1px solid var(--red); border-radius: 6px; background: transparent; color: var(--red); font-size: 0.85rem; cursor: pointer; }
+    .btn-danger:hover { background: rgba(239,68,68,0.1); }
 
     .section-actions { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 20px; }
 
@@ -635,6 +637,117 @@
           <div class="settings-hint" x-show="!tokens.length" style="margin-top:10px">No API tokens yet.</div>
         </div>
 
+        <!-- Two-Factor Authentication -->
+        <div class="settings-section">
+          <div class="settings-title">Two-Factor Authentication</div>
+          <div class="settings-hint" style="margin-bottom:14px">
+            Require a one-time code from an authenticator app (Google Authenticator, Authy, 1Password, etc.)
+            in addition to your password when logging in. Strongly recommended if this dashboard
+            is reachable beyond a fully trusted network — it controls real solar hardware.
+          </div>
+          <div x-show="twofaMsg" :class="twofaMsgOk ? 'feedback-ok' : 'feedback-err'" x-text="twofaMsg" style="margin-bottom:10px"></div>
+
+          <!-- Status / disable, when enabled and no enrollment in progress -->
+          <template x-if="twofa.enabled && !twofaSetup && !twofaBackupCodes">
+            <div>
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Status</div>
+                  <div class="settings-hint">
+                    <span style="color:var(--green)">●</span> Enabled —
+                    <span x-text="twofa.backup_codes_remaining"></span> unused backup code(s) remaining
+                  </div>
+                </div>
+              </div>
+
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Regenerate backup codes</div>
+                  <div class="settings-hint">Invalidates all existing codes and issues 10 new ones. Requires a current 2FA code.</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px">
+                  <input class="settings-input" type="text" style="width:120px" placeholder="123456"
+                         x-model="twofaRegenCode" inputmode="numeric" />
+                  <button class="btn btn-action" @click="regenerateBackupCodes()">Regenerate</button>
+                </div>
+              </div>
+
+              <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">
+                <div class="settings-label" style="margin-bottom:8px">Disable 2FA</div>
+                <div class="settings-hint" style="margin-bottom:10px">
+                  Requires both your current password and a valid code — defense in depth, so a
+                  hijacked browser session alone can't strip this protection.
+                </div>
+                <div class="field-grid">
+                  <div class="field"><label>Current password</label>
+                    <input type="password" x-model="twofaDisableForm.password" autocomplete="current-password" />
+                  </div>
+                  <div class="field"><label>2FA code</label>
+                    <input type="text" x-model="twofaDisableForm.code" inputmode="numeric" placeholder="123456 or backup code" />
+                  </div>
+                </div>
+                <div style="display:flex;justify-content:flex-end;margin-top:10px">
+                  <button class="btn-danger" @click="disableTwoFA()">Disable 2FA</button>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- Backup codes — shown once, right after enable / regenerate -->
+          <template x-if="twofaBackupCodes">
+            <div class="feedback-ok" style="display:flex;flex-direction:column;gap:10px">
+              <div><strong>Save these backup codes now</strong> — they will not be shown again. Each one logs you in
+                once if you lose access to your authenticator app.</div>
+              <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px">
+                <template x-for="c in twofaBackupCodes" :key="c">
+                  <code style="padding:6px 10px;background:rgba(0,0,0,0.25);border-radius:6px;text-align:center" x-text="c"></code>
+                </template>
+              </div>
+              <div style="display:flex;justify-content:flex-end">
+                <button class="btn btn-action" @click="twofaBackupCodes = null; loadTwoFAStatus()">I've saved these — done</button>
+              </div>
+            </div>
+          </template>
+
+          <!-- Enrollment in progress -->
+          <template x-if="twofaSetup">
+            <div>
+              <div class="settings-hint" style="margin-bottom:10px">
+                1. Scan this QR code with your authenticator app (or enter the secret manually).<br>
+                2. Enter the 6-digit code it generates below to confirm and activate 2FA.
+              </div>
+              <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-bottom:14px">
+                <div x-ref="twofaQr" style="background:#fff;padding:10px;border-radius:8px;display:inline-block"></div>
+                <div style="flex:1;min-width:220px">
+                  <div class="settings-label">Manual entry secret</div>
+                  <code style="display:inline-block;margin-top:4px;padding:6px 10px;background:rgba(0,0,0,0.25);border-radius:6px;word-break:break-all" x-text="twofaSetup.secret"></code>
+                </div>
+              </div>
+              <div class="field-grid">
+                <div class="field"><label>6-digit code from your app</label>
+                  <input type="text" x-model="twofaConfirmCode" inputmode="numeric" placeholder="123456"
+                         @keydown.enter="confirmTwoFA()" />
+                </div>
+              </div>
+              <div class="modal-actions" style="margin-top:14px">
+                <button class="btn-secondary" @click="cancelTwoFASetup()">Cancel</button>
+                <button class="btn-primary"   @click="confirmTwoFA()">Confirm &amp; Enable</button>
+              </div>
+            </div>
+          </template>
+
+          <!-- Not enabled, nothing in progress -->
+          <template x-if="!twofa.enabled && !twofaSetup && !twofaBackupCodes">
+            <div class="settings-row">
+              <div>
+                <div class="settings-label">Status</div>
+                <div class="settings-hint"><span style="color:var(--muted)">●</span> Not enabled</div>
+              </div>
+              <button class="btn btn-action" @click="startTwoFASetup()">Enable Two-Factor Authentication</button>
+            </div>
+          </template>
+        </div>
+
       </div>
     </template>
   </div>
@@ -870,22 +983,46 @@
   </div>
 
   <!-- ══ LOGIN MODAL ══ -->
-  <div class="overlay" :class="loginOpen && 'open'" @click.self="loginOpen = false">
-    <div class="modal" @keydown.escape.window="loginOpen = false">
-      <h2>Admin Login</h2>
-      <div class="field">
-        <label>Username</label>
-        <input type="text" x-model="loginUser" autocomplete="username" x-ref="loginUserInput" />
-      </div>
-      <div class="field">
-        <label>Password</label>
-        <input type="password" x-model="loginPass" autocomplete="current-password" @keydown.enter="doLogin()" />
-      </div>
-      <div class="form-error" x-text="loginError"></div>
-      <div class="modal-actions">
-        <button class="btn-secondary" x-show="!adminMode" @click="loginOpen = false">Cancel</button>
-        <button class="btn-primary"   @click="doLogin()">Login</button>
-      </div>
+  <div class="overlay" :class="loginOpen && 'open'" @click.self="closeLogin()">
+    <div class="modal" @keydown.escape.window="closeLogin()">
+      <template x-if="loginStep === 'credentials'">
+        <div>
+          <h2>Admin Login</h2>
+          <div class="field">
+            <label>Username</label>
+            <input type="text" x-model="loginUser" autocomplete="username" x-ref="loginUserInput" />
+          </div>
+          <div class="field">
+            <label>Password</label>
+            <input type="password" x-model="loginPass" autocomplete="current-password" @keydown.enter="doLogin()" />
+          </div>
+          <div class="form-error" x-text="loginError"></div>
+          <div class="modal-actions">
+            <button class="btn-secondary" x-show="!adminMode" @click="closeLogin()">Cancel</button>
+            <button class="btn-primary"   @click="doLogin()">Login</button>
+          </div>
+        </div>
+      </template>
+
+      <template x-if="loginStep === '2fa'">
+        <div>
+          <h2>Two-Factor Authentication</h2>
+          <div class="settings-hint" style="margin-bottom:10px">
+            Enter the 6-digit code from your authenticator app, or one of your backup codes
+            (format <code>XXXX-XXXX-XXXX-XXXX</code>) if you've lost access to it.
+          </div>
+          <div class="field">
+            <label>Authentication code</label>
+            <input type="text" x-model="login2faCode" inputmode="numeric" autocomplete="one-time-code"
+                   placeholder="123456" autofocus @keydown.enter="doVerify2FA()" />
+          </div>
+          <div class="form-error" x-text="loginError"></div>
+          <div class="modal-actions">
+            <button class="btn-secondary" @click="loginStep = 'credentials'; loginError = ''">Back</button>
+            <button class="btn-primary"   @click="doVerify2FA()">Verify</button>
+          </div>
+        </div>
+      </template>
     </div>
   </div>
 
@@ -923,6 +1060,7 @@
 
 <script src="/static/vendor/socket.io.min.js"></script>
 <script src="/static/vendor/plotly.min.js"></script>
+<script src="/static/vendor/qrcode.min.js"></script>
 <script nonce="{{ csp_nonce }}">
   const VC_KEYS = [
     'over_voltage_disconnect_voltage','charging_limit_voltage','over_voltage_reconnect_voltage',
@@ -1032,6 +1170,17 @@
       loginUser:  '',
       loginPass:  '',
       loginError: '',
+      loginStep:  'credentials',  // 'credentials' | '2fa'
+      login2faCode: '',
+
+      // Two-factor authentication (Settings tab)
+      twofa: { enabled: false, backup_codes_remaining: 0 },
+      twofaMsg: '', twofaMsgOk: true,
+      twofaSetup: null,        // { secret, otpauth_uri } — during enrollment
+      twofaConfirmCode: '',
+      twofaBackupCodes: null,  // string[] — shown once, after confirm/regenerate
+      twofaDisableForm: { password: '', code: '' },
+      twofaRegenCode: '',
 
       // Visualize
       vizFields:   initialVizFields,
@@ -1199,16 +1348,50 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username: this.loginUser, password: this.loginPass }),
           });
-          if (res.ok) {
+          const data = await res.json().catch(() => ({}));
+          if (res.ok && data.requires_2fa) {
+            // Password accepted — server holds a short-lived pending challenge
+            // (sb_2fa_pending cookie); now prompt for the second factor.
+            this.loginStep = '2fa';
+            this.login2faCode = '';
+            this.loginError = '';
+          } else if (res.ok) {
             this.authed = true;
-            this.loginOpen = false;
-            this.loginUser = this.loginPass = '';
+            this.closeLogin();
             // After login always land in settings
             this.switchTab('settings');
           } else {
             this.loginError = 'Invalid username or password.';
           }
         } catch { this.loginError = 'Connection error.'; }
+      },
+
+      async doVerify2FA() {
+        this.loginError = '';
+        const code = this.login2faCode.trim();
+        if (!code) { this.loginError = 'Enter the 6-digit code from your authenticator app (or a backup code).'; return; }
+        try {
+          const res = await fetch('/api/login/verify-2fa', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok) {
+            this.authed = true;
+            this.closeLogin();
+            this.switchTab('settings');
+          } else {
+            this.loginError = data.detail || 'Invalid or expired code.';
+          }
+        } catch { this.loginError = 'Connection error.'; }
+      },
+
+      closeLogin() {
+        this.loginOpen = false;
+        this.loginUser = this.loginPass = this.login2faCode = '';
+        this.loginError = '';
+        this.loginStep = 'credentials';
       },
 
       async doLogout() {
@@ -1231,7 +1414,7 @@
         this.tab = name;
         if (name === 'parameters' && !this.params)   this.loadParams();
         if (name === 'energy'     && !this.stats)    this.loadStats();
-        if (name === 'settings')                     { this.loadSettings(); this.loadTokens(); }
+        if (name === 'settings')                     { this.loadSettings(); this.loadTokens(); this.loadTwoFAStatus(); }
         if (name === 'history'    && !this.history)  this.loadHistory(0);
       },
 
@@ -1525,6 +1708,110 @@
       },
       async copyToken(value) {
         try { await navigator.clipboard.writeText(value); } catch {}
+      },
+
+      // Two-factor authentication
+      async loadTwoFAStatus() {
+        try {
+          const res = await fetch('/api/2fa/status');
+          if (res.ok) this.twofa = await res.json();
+        } catch {}
+      },
+      async startTwoFASetup() {
+        this.twofaMsg = '';
+        this.twofaConfirmCode = '';
+        try {
+          const res = await fetch('/api/2fa/setup', { method: 'POST' });
+          const data = await res.json();
+          if (res.ok) {
+            this.twofaSetup = { secret: data.secret, otpauth_uri: data.otpauth_uri };
+            this.$nextTick(() => this.renderTwoFAQr());
+          } else {
+            this.twofaMsgOk = false;
+            this.twofaMsg = data.detail || 'Failed to start 2FA setup.';
+          }
+        } catch { this.twofaMsgOk = false; this.twofaMsg = 'Connection error.'; }
+      },
+      renderTwoFAQr() {
+        const el = this.$refs.twofaQr;
+        if (!el || !window.QRCode || !this.twofaSetup) return;
+        el.innerHTML = '';
+        new QRCode(el, { text: this.twofaSetup.otpauth_uri, width: 176, height: 176 });
+      },
+      cancelTwoFASetup() {
+        this.twofaSetup = null;
+        this.twofaConfirmCode = '';
+        this.twofaMsg = '';
+      },
+      async confirmTwoFA() {
+        this.twofaMsg = '';
+        const code = this.twofaConfirmCode.trim();
+        if (!code) { this.twofaMsgOk = false; this.twofaMsg = 'Enter the 6-digit code from your authenticator app.'; return; }
+        try {
+          const res = await fetch('/api/2fa/confirm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            this.twofaSetup = null;
+            this.twofaConfirmCode = '';
+            this.twofaMsgOk = true;
+            this.twofaMsg = '';
+            this.twofaBackupCodes = data.backup_codes;
+          } else {
+            this.twofaMsgOk = false;
+            this.twofaMsg = data.detail || 'Incorrect code.';
+          }
+        } catch { this.twofaMsgOk = false; this.twofaMsg = 'Connection error.'; }
+      },
+      async disableTwoFA() {
+        this.twofaMsg = '';
+        if (!this.twofaDisableForm.password || !this.twofaDisableForm.code) {
+          this.twofaMsgOk = false;
+          this.twofaMsg = 'Enter your password and a current 2FA code.';
+          return;
+        }
+        if (!confirm('Disable two-factor authentication? This removes the second layer of protection on the admin account.')) return;
+        try {
+          const res = await fetch('/api/2fa/disable', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password: this.twofaDisableForm.password, code: this.twofaDisableForm.code }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            this.twofaDisableForm = { password: '', code: '' };
+            this.twofaMsgOk = true;
+            this.twofaMsg = 'Two-factor authentication disabled.';
+            await this.loadTwoFAStatus();
+          } else {
+            this.twofaMsgOk = false;
+            this.twofaMsg = data.detail || 'Failed to disable 2FA.';
+          }
+        } catch { this.twofaMsgOk = false; this.twofaMsg = 'Connection error.'; }
+      },
+      async regenerateBackupCodes() {
+        this.twofaMsg = '';
+        const code = this.twofaRegenCode.trim();
+        if (!code) { this.twofaMsgOk = false; this.twofaMsg = 'Enter a current 2FA code to regenerate backup codes.'; return; }
+        try {
+          const res = await fetch('/api/2fa/backup-codes/regenerate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            this.twofaRegenCode = '';
+            this.twofaMsg = '';
+            this.twofaBackupCodes = data.backup_codes;
+          } else {
+            this.twofaMsgOk = false;
+            this.twofaMsg = data.detail || 'Failed to regenerate backup codes.';
+          }
+        } catch { this.twofaMsgOk = false; this.twofaMsg = 'Connection error.'; }
       },
 
       fmt(v) { return v != null ? Number(v).toFixed(2) : '–'; },

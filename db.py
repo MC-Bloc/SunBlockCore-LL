@@ -117,10 +117,28 @@ def load_settings():
         "sim_mode":           lambda v: setattr(config, "SIM_MODE",            v == "true"),
         "token_expire_hours": lambda v: setattr(config, "TOKEN_EXPIRE_HOURS",  int(v)),
         "admin_password_hash":lambda v: setattr(config, "ADMIN_PASSWORD_HASH", v),
+        "secret_key":         lambda v: setattr(config, "SECRET_KEY",          v),
+        "totp_secret":        lambda v: setattr(config, "TOTP_SECRET",         v),
+        "totp_enabled":       lambda v: setattr(config, "TOTP_ENABLED",        v == "true"),
     }
     for key, value in rows:
         if key in _apply:
             _apply[key](value)
+
+    # SECRET_KEY must never be empty or a guessable static default — it signs
+    # every admin JWT session. If neither .env nor the persisted settings
+    # supplied one, generate a cryptographically random key now and persist it
+    # so it survives restarts (a fresh key on every boot would silently log
+    # everyone out and invalidate in-flight 2FA challenge tokens). This mirrors
+    # how admin_password_hash is generated-once-and-stored.
+    if not config.SECRET_KEY:
+        config.SECRET_KEY = secrets.token_hex(32)
+        save_setting("secret_key", config.SECRET_KEY)
+        _write_log(
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S") + ": "
+            "SECRET_KEY was not set — generated a new random key and saved it "
+            "to sunblock_settings.db. It will persist across restarts.\n"
+        )
 
 
 def save_setting(key: str, value) -> None:
@@ -267,6 +285,102 @@ def verify_api_token(raw_token: str) -> Optional[str]:
         )
         conn.commit()
         return config.ADMIN_USERNAME
+    finally:
+        conn.close()
+
+
+# ── 2FA backup codes ──────────────────────────────────────────────────────────
+#
+# One-time recovery codes for when the admin loses their TOTP device. Stored in
+# the same sunblock_settings.db as everything else (see api_tokens rationale
+# above). Only a SHA-256 hash of each code is kept — never the raw value — and
+# each code is consumed (marked used_at) on first successful use, mirroring the
+# "shown once at creation" handling of API tokens and the new password.
+
+def _backup_codes_conn() -> sqlite3.Connection:
+    """Open the settings DB and ensure the backup_codes table exists."""
+    conn = sqlite3.connect(config.SETTINGS_DB_NAME)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS backup_codes ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " code_hash TEXT NOT NULL UNIQUE,"
+        " created_at TEXT NOT NULL,"
+        " used_at TEXT"
+        ")"
+    )
+    conn.commit()
+    return conn
+
+
+def _hash_backup_code(raw_code: str) -> str:
+    return hashlib.sha256(raw_code.encode("utf-8")).hexdigest()
+
+
+def generate_backup_codes(count: int = 10) -> list:
+    """
+    Replace any existing backup codes with `count` freshly generated ones.
+    Returns the raw codes — shown to the admin exactly once, never retrievable
+    again. Format: 4 groups of 4 alphanumeric chars (e.g. "ABCD-EFGH-IJKL-MNOP"),
+    generated from a high-entropy random source (secrets.token_hex), so a fast
+    unsalted SHA-256 hash is appropriate, same as API tokens.
+    """
+    raw_codes = []
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _backup_codes_conn()
+    try:
+        conn.execute("DELETE FROM backup_codes")
+        for _ in range(count):
+            raw = secrets.token_hex(8).upper()  # 16 hex chars
+            formatted = "-".join(raw[i:i + 4] for i in range(0, 16, 4))
+            raw_codes.append(formatted)
+            conn.execute(
+                "INSERT INTO backup_codes (code_hash, created_at, used_at) VALUES (?, ?, NULL)",
+                (_hash_backup_code(formatted), now),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return raw_codes
+
+
+def verify_and_consume_backup_code(raw_code: str) -> bool:
+    """
+    Check a backup code against stored hashes. If it matches an unused code,
+    mark it used (one-time) and return True. Otherwise return False.
+    """
+    conn = _backup_codes_conn()
+    try:
+        row = conn.execute(
+            "SELECT id FROM backup_codes WHERE code_hash = ? AND used_at IS NULL",
+            (_hash_backup_code(raw_code.strip().upper()),),
+        ).fetchone()
+        if row is None:
+            return False
+        conn.execute(
+            "UPDATE backup_codes SET used_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), row[0]),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def count_unused_backup_codes() -> int:
+    conn = _backup_codes_conn()
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM backup_codes WHERE used_at IS NULL").fetchone()
+        return row[0] if row else 0
+    finally:
+        conn.close()
+
+
+def clear_backup_codes() -> None:
+    """Remove all backup codes — called when 2FA is disabled."""
+    conn = _backup_codes_conn()
+    try:
+        conn.execute("DELETE FROM backup_codes")
+        conn.commit()
     finally:
         conn.close()
 

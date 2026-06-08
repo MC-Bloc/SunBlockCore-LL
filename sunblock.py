@@ -41,7 +41,7 @@ from typing import Optional
 import bcrypt as _bcrypt
 import socketio
 from epevermodbus.driver import EpeverChargeController
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -50,16 +50,22 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 import config
+import pyotp
+
 from auth import (
     ControllerParamsUpdate, LoginRequest, SettingsUpdate, PasswordChange,
-    TokenCreateRequest, limiter,
-    check_session, create_token, verify_session, verify_session_or_token,
+    TokenCreateRequest, TwoFACodeRequest, TwoFADisableRequest, limiter,
+    PENDING_2FA_MINUTES,
+    check_session, create_token, create_pending_2fa_token, verify_pending_2fa_token,
+    verify_totp_code, verify_session, verify_session_or_token,
     require_controller, require_real_controller,
 )
 from db import (
-    admin_log, apply_data_directory, check_db, create_api_token, delete_setting,
-    list_api_tokens, load_settings, query_history, query_visualize,
-    revoke_api_token, save_setting, sunblock_log, write_db,
+    admin_log, apply_data_directory, check_db, clear_backup_codes,
+    count_unused_backup_codes, create_api_token, delete_setting,
+    generate_backup_codes, list_api_tokens, load_settings, query_history,
+    query_visualize, revoke_api_token, save_setting, sunblock_log,
+    verify_and_consume_backup_code, write_db,
 )
 from db import VIZ_FIELD_META
 from hardware import (
@@ -127,13 +133,6 @@ async def lifespan(app: FastAPI):
             "Run scripts/gen_password_hash.py and set it in .env. Login is disabled."
         )
 
-    if config.SECRET_KEY in ("changeme-secret-key", ""):
-        await sunblock_log(
-            "WARNING: SECRET_KEY is set to the default value. "
-            "All existing sessions are insecure. Set a random key in .env: "
-            "python3 -c \"import secrets; print(secrets.token_hex(32))\""
-        )
-
     if not config.ADMIN_PATH:
         await sunblock_log(
             "WARNING: ADMIN_PATH is not set. "
@@ -186,6 +185,15 @@ app       = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_ur
 templates = Jinja2Templates(directory="templates")
 
 app.state.limiter = limiter
+
+# Holds a freshly generated TOTP secret between POST /api/2fa/setup and
+# POST /api/2fa/confirm. Deliberately kept in memory only (never persisted) —
+# an unconfirmed secret must not be able to silently activate 2FA (e.g. via a
+# server restart resuming a half-finished enrollment), and it must not survive
+# a restart that the admin didn't initiate. Single-admin model: one pending
+# enrollment at a time is sufficient. Cleared on confirm, on a fresh /setup
+# call, and never written to disk.
+_pending_totp_secret: Optional[str] = None
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.mount("/static", StaticFiles(directory="public"), name="static")
 
@@ -293,6 +301,22 @@ async def login(request: Request, body: LoginRequest, response: Response):
        not _bcrypt.checkpw(body.password.encode(), config.ADMIN_PASSWORD_HASH.encode()):
         await admin_log("LOGIN_FAILED", f"user={body.username}", ip=ip)
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if config.TOTP_ENABLED:
+        # Password alone is not enough — issue a short-lived "pending" token in
+        # its own cookie (never `sb_session`) and require a second factor before
+        # any session is granted. See auth.create_pending_2fa_token.
+        response.set_cookie(
+            key="sb_2fa_pending",
+            value=create_pending_2fa_token(body.username),
+            httponly=True,
+            secure=config.SECURE_COOKIES,
+            samesite="strict",
+            max_age=PENDING_2FA_MINUTES * 60,
+        )
+        await admin_log("LOGIN_PASSWORD_OK_2FA_PENDING", f"user={body.username}", ip=ip)
+        return {"requires_2fa": True, "message": "Password verified — enter your 2FA code"}
+
     response.set_cookie(
         key="sb_session",
         value=create_token(body.username),
@@ -304,10 +328,53 @@ async def login(request: Request, body: LoginRequest, response: Response):
     await admin_log("LOGIN", f"user={body.username}", ip=ip)
     return {"message": "Logged in"}
 
+
+@app.post("/api/login/verify-2fa")
+@limiter.limit("5/minute")
+async def login_verify_2fa(request: Request, body: TwoFACodeRequest, response: Response,
+                           sb_2fa_pending: Optional[str] = Cookie(default=None)):
+    ip = _client_ip(request)
+    username = verify_pending_2fa_token(sb_2fa_pending)
+    if not username:
+        raise HTTPException(status_code=401, detail="2FA challenge expired or invalid — log in again")
+
+    code = body.code.strip()
+    ok = verify_totp_code(code)
+    used_backup = False
+    if not ok:
+        ok = await asyncio.to_thread(verify_and_consume_backup_code, code)
+        used_backup = ok
+
+    if not ok:
+        await admin_log("2FA_CHALLENGE_FAILED", f"user={username}", ip=ip)
+        raise HTTPException(status_code=401, detail="Invalid authentication code")
+
+    response.delete_cookie("sb_2fa_pending", samesite="strict")
+    response.set_cookie(
+        key="sb_session",
+        value=create_token(username),
+        httponly=True,
+        secure=config.SECURE_COOKIES,
+        samesite="strict",
+        max_age=config.TOKEN_EXPIRE_HOURS * 3600,
+    )
+    if used_backup:
+        await admin_log("BACKUP_CODE_USED", f"user={username}", ip=ip)
+        remaining = await asyncio.to_thread(count_unused_backup_codes)
+        if remaining <= 2:
+            await sunblock_log(
+                f"WARNING: only {remaining} unused 2FA backup codes remain for "
+                f"user={username}. Generate new ones from Settings soon."
+            )
+    await admin_log("2FA_LOGIN", f"user={username} method={'backup_code' if used_backup else 'totp'}", ip=ip)
+    return {"message": "Logged in"}
+
+
 @app.post("/api/logout")
 async def logout(request: Request, response: Response):
     await admin_log("LOGOUT", ip=_client_ip(request))
     response.delete_cookie("sb_session", samesite="strict")
+    response.delete_cookie("sb_2fa_pending", samesite="strict")
     return {"message": "Logged out"}
 
 @app.get("/api/auth/status")
@@ -597,6 +664,129 @@ async def change_password(request: Request, body: PasswordChange, user: str = De
     await asyncio.to_thread(save_setting, "admin_password_hash", new_hash)
     await admin_log("PASSWORD_CHANGE", f"user={user}", ip=ip)
     return {"message": "Password updated"}
+
+
+# Two-factor authentication (TOTP) — enroll / confirm / disable.
+#
+# All of these are session-only (Depends(verify_session)), never bearer-token
+# eligible — exactly like change_password and token management. A leaked API
+# token must never be able to touch the account's second factor.
+#
+# Enrollment is two steps (setup → confirm) so a typo'd authenticator app never
+# locks the admin out: the secret only becomes active (persisted + totp_enabled
+# set) after the admin proves they can already generate valid codes with it.
+
+@app.get("/api/2fa/status")
+async def twofa_status(user: str = Depends(verify_session)):
+    return {
+        "enabled": config.TOTP_ENABLED,
+        "backup_codes_remaining": await asyncio.to_thread(count_unused_backup_codes) if config.TOTP_ENABLED else 0,
+    }
+
+
+@app.post("/api/2fa/setup")
+async def twofa_setup(request: Request, user: str = Depends(verify_session)):
+    global _pending_totp_secret
+    if config.TOTP_ENABLED:
+        raise HTTPException(status_code=400, detail="2FA is already enabled — disable it first to re-enroll")
+
+    _pending_totp_secret = pyotp.random_base32()
+    uri = pyotp.totp.TOTP(_pending_totp_secret).provisioning_uri(
+        name=config.ADMIN_USERNAME, issuer_name="SunBlockCore-LL"
+    )
+    await admin_log("2FA_SETUP_STARTED", f"user={user}", ip=_client_ip(request))
+    return {
+        "secret": _pending_totp_secret,
+        "otpauth_uri": uri,
+        "message": "Scan the QR code (or enter the secret manually) in your authenticator app, "
+                   "then submit the 6-digit code it generates to confirm.",
+    }
+
+
+@app.post("/api/2fa/confirm")
+async def twofa_confirm(request: Request, body: TwoFACodeRequest, user: str = Depends(verify_session)):
+    global _pending_totp_secret
+    ip = _client_ip(request)
+    if config.TOTP_ENABLED:
+        raise HTTPException(status_code=400, detail="2FA is already enabled")
+    if not _pending_totp_secret:
+        raise HTTPException(status_code=400, detail="No 2FA setup in progress — call /api/2fa/setup first")
+
+    code = body.code.strip().replace(" ", "")
+    try:
+        valid = pyotp.TOTP(_pending_totp_secret).verify(code, valid_window=1)
+    except Exception:
+        valid = False
+    if not valid:
+        await admin_log("2FA_CHALLENGE_FAILED", f"user={user} context=confirm", ip=ip)
+        raise HTTPException(status_code=400, detail="Incorrect code — check your authenticator app and try again")
+
+    secret = _pending_totp_secret
+    _pending_totp_secret = None
+    config.TOTP_SECRET = secret
+    config.TOTP_ENABLED = True
+    await asyncio.to_thread(save_setting, "totp_secret", secret)
+    await asyncio.to_thread(save_setting, "totp_enabled", True)
+    backup_codes = await asyncio.to_thread(generate_backup_codes)
+    await admin_log("2FA_ENABLED", f"user={user}", ip=ip)
+    return {
+        "message": "Two-factor authentication is now enabled.",
+        "backup_codes": backup_codes,
+        "backup_codes_notice": "Save these somewhere safe — they will not be shown again. "
+                               "Each one can be used once to log in if you lose access to your authenticator app.",
+    }
+
+
+@app.post("/api/2fa/disable")
+async def twofa_disable(request: Request, body: TwoFADisableRequest, user: str = Depends(verify_session)):
+    global _pending_totp_secret
+    ip = _client_ip(request)
+    if not config.TOTP_ENABLED:
+        raise HTTPException(status_code=400, detail="2FA is not enabled")
+
+    # Defense in depth — mirrors change_password: require BOTH the current
+    # password AND a valid second-factor code to turn 2FA off. Otherwise a
+    # hijacked session alone (e.g. via XSS) could strip the account's strongest
+    # protection with one click.
+    if not _bcrypt.checkpw(body.password.encode(), config.ADMIN_PASSWORD_HASH.encode()):
+        await admin_log("2FA_DISABLE_FAILED", f"user={user} reason=bad_password", ip=ip)
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    code = body.code.strip()
+    ok = verify_totp_code(code) or await asyncio.to_thread(verify_and_consume_backup_code, code)
+    if not ok:
+        await admin_log("2FA_DISABLE_FAILED", f"user={user} reason=bad_code", ip=ip)
+        raise HTTPException(status_code=400, detail="Incorrect authentication code")
+
+    config.TOTP_ENABLED = False
+    config.TOTP_SECRET = ""
+    _pending_totp_secret = None
+    await asyncio.to_thread(save_setting, "totp_enabled", False)
+    await asyncio.to_thread(delete_setting, "totp_secret")
+    await asyncio.to_thread(clear_backup_codes)
+    await admin_log("2FA_DISABLED", f"user={user}", ip=ip)
+    return {"message": "Two-factor authentication has been disabled."}
+
+
+@app.post("/api/2fa/backup-codes/regenerate")
+async def twofa_regenerate_backup_codes(request: Request, body: TwoFACodeRequest, user: str = Depends(verify_session)):
+    """Invalidate all existing backup codes and issue a fresh set — requires a valid 2FA code."""
+    ip = _client_ip(request)
+    if not config.TOTP_ENABLED:
+        raise HTTPException(status_code=400, detail="2FA is not enabled")
+    code = body.code.strip()
+    ok = verify_totp_code(code) or await asyncio.to_thread(verify_and_consume_backup_code, code)
+    if not ok:
+        await admin_log("2FA_CHALLENGE_FAILED", f"user={user} context=regenerate_backup_codes", ip=ip)
+        raise HTTPException(status_code=400, detail="Incorrect authentication code")
+
+    backup_codes = await asyncio.to_thread(generate_backup_codes)
+    await admin_log("BACKUP_CODES_REGENERATED", f"user={user}", ip=ip)
+    return {
+        "backup_codes": backup_codes,
+        "backup_codes_notice": "Save these somewhere safe — they will not be shown again. "
+                               "All previous backup codes have been invalidated.",
+    }
 
 
 # API tokens — for authenticating to the API from outside the browser.

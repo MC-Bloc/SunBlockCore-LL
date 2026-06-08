@@ -44,12 +44,24 @@ READ_INTERVAL = int(os.getenv("READ_INTERVAL", 1))
 # ── Auth ──────────────────────────────────────────────────────────────────────
 ADMIN_USERNAME      = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH", "")
-SECRET_KEY          = os.getenv("SECRET_KEY", "changeme-secret-key")
+SECRET_KEY          = os.getenv("SECRET_KEY", "")
+# No static fallback — a guessable default would let anyone forge admin
+# sessions. If SECRET_KEY isn't set in .env, load_settings() generates a
+# cryptographically random one on first run and persists it to
+# sunblock_settings.db (mirroring how admin_password_hash is stored), so it
+# survives restarts without forcing the operator to hand-generate one.
 TOKEN_EXPIRE_HOURS  = int(os.getenv("TOKEN_EXPIRE_HOURS", 24))
 SECURE_COOKIES      = os.getenv("SECURE_COOKIES", "false").lower() == "true"
 # Secret slug for the admin login page — keep this out of public-facing links.
 # If unset the route is not registered (admins are warned at startup).
 ADMIN_PATH          = os.getenv("ADMIN_PATH")  # e.g. "/xK9mP3qR7"
+
+# Two-factor authentication (TOTP). There is no .env equivalent — these are
+# purely runtime state, populated from sunblock_settings.db by load_settings()
+# (mirrors admin_password_hash, but with no static/env fallback: 2FA starts
+# disabled until the admin explicitly enrolls via the Settings panel).
+TOTP_SECRET  = ""      # base32 TOTP secret; "" until enrollment is confirmed
+TOTP_ENABLED = False   # True once enrollment is confirmed and active
 
 # ── Mode ──────────────────────────────────────────────────────────────────────
 SIM_MODE = os.getenv("SIM_MODE", "false").lower() == "true"

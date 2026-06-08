@@ -80,6 +80,53 @@ Expiry:       configurable per token at creation (1 hour – 1 year, or never)
 
 Token validation also updates `last_used_at` so the admin can spot stale or abandoned tokens and revoke them. Every create/revoke is written to the admin audit log (`TOKEN_CREATED`, `TOKEN_REVOKED`).
 
+### Two-factor authentication (TOTP)
+
+Optional second factor for the admin login, built on the standard TOTP algorithm (`pyotp`, RFC 6238) — compatible with any authenticator app (Google Authenticator, Authy, 1Password, etc.). Disabled by default; the admin enrolls from Settings → Two-Factor Authentication.
+
+**Enrollment (two-step, to prevent lockout):**
+```
+POST /api/2fa/setup    → generates a random base32 secret, kept ONLY in memory
+                         (sunblock._pending_totp_secret) and returned with an
+                         otpauth:// URI for the QR code. Never written to disk
+                         at this stage.
+POST /api/2fa/confirm  → verifies a code against the pending secret BEFORE
+                         persisting anything. Only on success does the secret
+                         get written to sunblock_settings.db (totp_secret,
+                         totp_enabled=true) and 10 backup codes generated.
+```
+Requiring a successful verification before activation means a typo'd secret or a misconfigured authenticator app can never lock the admin out — if confirmation fails, nothing changes and `/setup` can simply be called again.
+
+**Backup codes:** 10 single-use recovery codes (`XXXX-XXXX-XXXX-XXXX`, generated via `secrets.token_hex`), stored as SHA-256 hashes in a new `backup_codes` table (mirrors the `api_tokens` storage rationale — high-entropy random values, fast hash is appropriate, raw value never persisted). Shown to the admin exactly once, at creation/regeneration time. Each is marked `used_at` and rejected on reuse. The admin is warned in the application log when 2 or fewer remain.
+
+**Login flow when 2FA is enabled:**
+```
+POST /api/login            → password verified, but NO sb_session is issued.
+                             Instead: a short-lived (5 min) JWT with
+                             purpose: "2fa_pending" is set in its own cookie,
+                             sb_2fa_pending. Response: {requires_2fa: true}.
+POST /api/login/verify-2fa → validates sb_2fa_pending + a TOTP code or backup
+                             code (5 req/min rate limit, same as /api/login).
+                             On success: deletes sb_2fa_pending, issues the
+                             real sb_session cookie.
+```
+
+**Why a separate "purpose"-tagged token rather than a partial session:** `verify_session`, `check_session`, and `verify_session_or_token` all explicitly reject any JWT carrying a `purpose` claim — so even if an attacker captured `sb_2fa_pending` (e.g. via a misconfigured proxy log), replaying it as `sb_session` is rejected outright. The pending token can only ever be exchanged through the one endpoint that knows how to validate the second factor.
+
+**Disabling 2FA — defense in depth:** `POST /api/2fa/disable` requires *both* the current password and a valid TOTP/backup code, exactly mirroring `change_password`. This is deliberate: a hijacked browser session (e.g. via XSS, or a forgotten logged-in session on a shared machine) should not by itself be able to strip the account's strongest protection.
+
+**Session-only, never bearer-token-eligible:** all `/api/2fa/*` management endpoints use `Depends(verify_session)`, exactly like `change_password` and API token management — a leaked bearer token must never be able to touch the account's second factor or backup codes.
+
+**Recovery if locked out (no backup codes, no authenticator access):** 2FA state lives entirely in `sunblock_settings.db`. An operator with filesystem/SSH access can disable it directly:
+```bash
+sqlite3 /opt/sunblock/data/sunblock_settings.db \
+  "UPDATE settings SET value='false' WHERE key='totp_enabled'; \
+   DELETE FROM settings WHERE key='totp_secret'; \
+   DELETE FROM backup_codes;"
+sudo systemctl restart sunblock
+```
+This is the same class of operation as the existing `admin_password_hash` recovery path — direct DB access is already required to recover from a lost admin password, so this adds no new attack surface, only a documented procedure for a new feature.
+
 ### Secret admin path
 
 The admin login page is registered at a random URL slug set by `ADMIN_PATH` in `.env`. The server:
@@ -259,6 +306,15 @@ Every authenticated write action is appended to `<DATA_DIRECTORY>/SunBlockAdminA
 | `POWER_PROFILE` | Power profile switched |
 | `CONTROLLER_PARAMS_UPDATE` | Controller register write |
 | `RTC_SYNC` | RTC synchronised to server time |
+| `LOGIN_PASSWORD_OK_2FA_PENDING` | Password correct; 2FA challenge issued (not yet logged in) |
+| `2FA_LOGIN` | Second factor accepted — `method=totp` or `method=backup_code` |
+| `2FA_CHALLENGE_FAILED` | Incorrect TOTP/backup code at login, setup confirmation, disable, or backup-code regeneration |
+| `2FA_SETUP_STARTED` | Enrollment began — pending secret generated |
+| `2FA_ENABLED` | Enrollment confirmed — 2FA now active |
+| `2FA_DISABLED` | 2FA turned off (password + code both verified) |
+| `2FA_DISABLE_FAILED` | Disable attempt rejected — `reason=bad_password` or `reason=bad_code` |
+| `BACKUP_CODE_USED` | A one-time backup code was consumed to log in |
+| `BACKUP_CODES_REGENERATED` | All backup codes invalidated and replaced |
 
 The audit log falls back to stderr if `DATA_DIRECTORY` is not yet configured, so no events are silently lost during the initial setup flow.
 
@@ -278,21 +334,23 @@ The audit log is append-only at the application level. For tamper-evident loggin
 
 | Secret | Location | Risk if leaked |
 |---|---|---|
-| `SECRET_KEY` | `.env` | Attacker can forge arbitrary JWT sessions (full admin access) |
+| `SECRET_KEY` | `.env` (optional) / auto-generated into `sunblock_settings.db` | Attacker can forge arbitrary JWT sessions (full admin access) |
 | `ADMIN_PASSWORD_HASH` | `.env` / `sunblock_settings.db` | Enables offline brute-force of the admin password |
 | `ADMIN_PATH` | `.env` | Reveals the admin login URL; enables targeted login brute-force |
 | `ADMIN_USERNAME` | `.env` | Low risk alone; reduces brute-force search space |
 | API tokens (`sbll_...`) | Shown once at creation; never persisted in raw form | Grants the same data/control-plane access as an admin session until revoked or expired — treat like a password |
+| `totp_secret` | `sunblock_settings.db` only (never shown again after enrollment) | Lets an attacker generate valid 2FA codes, defeating the second factor entirely |
+| 2FA backup codes | Shown once at creation/regeneration; only SHA-256 hashes persisted | Each is a one-time bypass of the second factor — treat like a list of one-time passwords |
 
 ### `.env` security
 
 `.env` is in `.gitignore`. `sample.env` contains only placeholder values and is safe to commit.
 
-The `SECRET_KEY` default value (`changeme-secret-key`) is intentionally weak to trigger attention. **It must be replaced before any non-local deployment.** A warning is logged at startup if the default is detected.
+`SECRET_KEY` has no static default — if it's left blank in `.env`, the server generates a cryptographically random 32-byte key on first startup and persists it to `sunblock_settings.db` (see SEC-001 — now resolved).
 
 ### `sunblock_settings.db`
 
-This file can contain the `admin_password_hash` key (after a password change via the panel) and the `api_tokens` table (SHA-256 hashes only — never raw tokens). Protect it:
+This file can contain the `admin_password_hash`, `secret_key`, and `totp_secret`/`totp_enabled` keys (the most sensitive values in the system — together they can grant full forged sessions and defeat 2FA), plus the `api_tokens` and `backup_codes` tables (SHA-256 hashes only — never raw values). Protect it:
 
 ```bash
 chmod 600 /opt/sunblock/data/sunblock_settings.db
@@ -302,15 +360,15 @@ chmod 600 /opt/sunblock/data/sunblock_settings.db
 
 ## 10. Known Security Issues
 
-### SEC-001 — Weak default `SECRET_KEY` *(High)*
+### SEC-001 — Weak default `SECRET_KEY` *(Resolved)*
 
-**Description:** The default `SECRET_KEY` is `"changeme-secret-key"`. If an operator forgets to set this, an attacker who knows this default can forge valid JWT tokens.
+**Description:** Previously, `SECRET_KEY` fell back to the static placeholder `"changeme-secret-key"` if an operator forgot to set it in `.env`. An attacker who knew this default could forge valid JWT admin sessions outright.
 
-**Mitigation:** Replace with a cryptographically random value:
-```bash
-python3 -c "import secrets; print(secrets.token_hex(32))"
-```
-**Status:** Not fixed — deployment configuration responsibility. Server logs a warning at startup if the default is detected.
+**Fix:** `config.py` no longer has *any* static fallback — `SECRET_KEY` defaults to `""`. At startup, `db.load_settings()` checks `config.SECRET_KEY`; if it's still empty after `.env` and persisted-settings are loaded, it generates one with `secrets.token_hex(32)` (256 bits of entropy) and immediately persists it to the `settings` table in `sunblock_settings.db` via `save_setting("secret_key", ...)` — exactly mirroring how `admin_password_hash` is generated-once-and-stored.
+
+**Why persist instead of regenerating every boot:** A fresh key on every restart would silently invalidate every admin session (and, once 2FA ships, any in-flight pending-2FA challenge tokens) on every service restart — a serious availability/UX problem for an operator who isn't expecting it. Persisting the generated key means it behaves exactly like an operator-supplied key: stable across restarts, rotatable by deleting the `secret_key` row from `sunblock_settings.db` (forces regeneration on next start, invalidating all sessions — useful if compromise is suspected).
+
+**Status:** Fixed — no operator action required. Setting `SECRET_KEY` explicitly in `.env` remains supported (useful for multi-instance deployments that must share a signing key, or to pin a known value); note that, per the usual settings-priority chain, a value already persisted in `sunblock_settings.db` takes precedence over `.env` at runtime — delete the persisted `secret_key` row if you need an `.env` value to take effect.
 
 ---
 
@@ -336,7 +394,7 @@ python3 -c "import secrets; print(secrets.token_hex(32))"
 
 **Description:** HS256 uses the same key for signing and verification. If `SECRET_KEY` is ever exposed, all sessions can be forged. There is no mechanism to rotate the key without invalidating all existing sessions.
 
-**Mitigation:** Rotate `SECRET_KEY` in `.env` immediately if compromise is suspected. All existing sessions will be invalidated.  
+**Mitigation:** To rotate immediately if compromise is suspected: delete the `secret_key` row from `sunblock_settings.db` (`sqlite3 sunblock_settings.db "DELETE FROM settings WHERE key='secret_key'"`) and restart — the server generates and persists a fresh random key automatically. Setting `SECRET_KEY` explicitly in `.env` also works but remember the persisted value normally takes precedence, so the old row must still be cleared first. All existing sessions will be invalidated either way.  
 **Status:** Accepted. RS256 is not warranted for a single-admin system.
 
 ---
@@ -433,8 +491,9 @@ The audit log is a plain text file. A compromised admin account could truncate o
 
 Before exposing SunBlockCore-LL outside a trusted local network:
 
-- [ ] Replace `SECRET_KEY` with a cryptographically random 32-byte hex value
+- [x] `SECRET_KEY` — no action needed; the server auto-generates and persists a random 256-bit key on first run (see SEC-001)
 - [ ] Generate a strong admin password and set `ADMIN_PASSWORD_HASH` in `.env`
+- [ ] **Enable two-factor authentication** (Settings → Two-Factor Authentication) — strongly recommended for any deployment reachable beyond a fully trusted network, since this dashboard controls real solar hardware. Save the backup codes somewhere safe and offline.
 - [ ] Generate a random `ADMIN_PATH` slug and keep it private
 - [ ] Set `SECURE_COOKIES=true` in `.env`
 - [ ] Terminate TLS at a reverse proxy; proxy WebSocket upgrade headers

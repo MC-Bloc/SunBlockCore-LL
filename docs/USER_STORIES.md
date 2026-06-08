@@ -82,6 +82,31 @@ As an **Admin**, I want the login endpoint to be rate-limited, so that brute-for
 
 ---
 
+## Two-Factor Authentication
+
+**US-069**  
+As an **Admin**, I want to enable two-factor authentication using a standard authenticator app (Google Authenticator, Authy, 1Password, etc.), so that a stolen or guessed password alone cannot grant access to a dashboard that controls real solar hardware.
+
+**US-070**  
+As an **Admin**, I want enrollment to require me to prove I can already generate valid codes before 2FA is switched on, so that a typo or misconfigured app can never lock me out of my own account.
+
+**US-071**  
+As an **Admin**, I want to be shown a set of one-time backup codes when I enable 2FA, so that I can still get in if I lose my phone or authenticator app.
+
+**US-072**  
+As an **Admin**, when 2FA is enabled, I want the login flow to ask for my password first and then for a current code (or a backup code) before granting access, so that both factors are independently required — not just checked as an afterthought.
+
+**US-073**  
+As an **Admin**, I want to be able to regenerate my backup codes (invalidating the old ones) by proving I still have access to my authenticator, so that I can recover from a situation where my saved codes were exposed or used up.
+
+**US-074**  
+As an **Admin**, I want disabling 2FA to require both my current password and a valid code, so that a hijacked browser session alone can't strip away the account's strongest protection.
+
+**US-075**  
+As an **Operator**, I want every 2FA-related event (enrollment, enable, disable, successful/failed challenges, backup code use) written to the admin audit log with a timestamp and IP, so that I can detect attempts to brute-force or bypass the second factor.
+
+---
+
 ## Settings Management
 
 **US-019**  
@@ -306,3 +331,4 @@ As an **Operator**, I want token management itself (`/api/tokens`) and the passw
 | US-056 – US-059 (Access tiers + secret admin path) | Implemented |
 | US-060 – US-063 (Audit logging + DoS + path protection) | Implemented |
 | US-064 – US-068 (API tokens for external/programmatic access) | Implemented |
+| US-069 – US-075 (Two-factor authentication) | Implemented |

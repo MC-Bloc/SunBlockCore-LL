@@ -104,7 +104,7 @@ All files live in `DATA_DIRECTORY` (required — must be set in `.env`, no defau
 | File | Purpose |
 |---|---|
 | `SunBlockCore-LL.db` | Solar telemetry — `solardata` table (12 columns) |
-| `sunblock_settings.db` | Runtime settings — `settings(key TEXT PK, value TEXT)` and `api_tokens` (hashed bearer tokens for external API access) |
+| `sunblock_settings.db` | Runtime settings — `settings(key TEXT PK, value TEXT)`, `api_tokens` (hashed bearer tokens for external API access), and `backup_codes` (hashed one-time 2FA recovery codes) |
 | `SunBlockCoreLogs.txt` | Application log (startup, errors, polling events) |
 | `SunBlockAdminAudit.txt` | Admin audit log — every write action with timestamp + IP |
 
@@ -122,6 +122,16 @@ CREATE TABLE api_tokens (
 );
 ```
 
+**`backup_codes` schema** (in `sunblock_settings.db`, created lazily by `db._backup_codes_conn()`):
+```sql
+CREATE TABLE backup_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code_hash TEXT NOT NULL UNIQUE,    -- SHA-256 of the formatted code; raw value never stored
+    created_at TEXT NOT NULL,
+    used_at TEXT                       -- NULL until consumed (one-time use)
+);
+```
+
 **Telemetry schema:**
 ```sql
 CREATE TABLE solardata (
@@ -132,7 +142,7 @@ CREATE TABLE solardata (
 );
 ```
 
-**Settings keys:** `read_interval`, `data_man`, `sim_mode`, `token_expire_hours`, `admin_password_hash`
+**Settings keys:** `read_interval`, `data_man`, `sim_mode`, `token_expire_hours`, `admin_password_hash`, `secret_key` (auto-generated on first run if not supplied via `.env` — see `db.load_settings()`), `totp_secret` and `totp_enabled` (2FA — absent/false until the admin enrolls via Settings)
 
 ---
 
@@ -152,6 +162,12 @@ CREATE TABLE solardata (
 | GET/PATCH | `/api/settings` | **Yes** | Get/update runtime settings |
 | DELETE | `/api/settings/{key}` | **Yes** | Reset setting to .env value |
 | POST | `/api/settings/password` | Session only | Change admin password |
+| GET | `/api/2fa/status` | Session only | `{enabled, backup_codes_remaining}` |
+| POST | `/api/2fa/setup` | Session only | Begin 2FA enrollment (pending TOTP secret + QR URI) |
+| POST | `/api/2fa/confirm` | Session only | Verify pending secret, activate 2FA, return backup codes |
+| POST | `/api/2fa/disable` | Session only | Disable 2FA — requires password + valid code |
+| POST | `/api/2fa/backup-codes/regenerate` | Session only | Invalidate + reissue backup codes — requires valid code |
+| POST | `/api/login/verify-2fa` | Rate-limited (5/min) | Exchange a pending 2FA challenge + code for a session |
 | POST | `/api/tokens` | Session only | Generate an API bearer token (raw value shown once) |
 | GET | `/api/tokens` | Session only | List API tokens (metadata only) |
 | DELETE | `/api/tokens/{id}` | Session only | Revoke an API token |
@@ -210,6 +226,7 @@ Tab panels use `x-show` (not `x-if`) — DOM is retained between switches so cha
 - `data_directory` validated with `_validate_data_directory()` — resolves symlinks, rejects system paths
 - All data endpoints (history, visualize, downloads) require auth
 - API bearer tokens (`auth.verify_session_or_token`) let external scripts authenticate without a session cookie — generated/revoked from Settings → API Tokens, hashed with SHA-256 in `api_tokens` (never stored raw), with configurable expiry
+- Optional TOTP-based two-factor authentication (`pyotp`) — when enabled, `/api/login` issues a short-lived `sb_2fa_pending` JWT (5 min, `purpose: "2fa_pending"`, never accepted by `verify_session`/`verify_session_or_token`) instead of a real session; `/api/login/verify-2fa` exchanges it for `sb_session` after validating a TOTP code or one-time SHA-256-hashed backup code. Enrollment is two-step (setup → confirm) so a typo'd authenticator never locks the admin out, and disabling 2FA requires both the password and a valid code (mirrors `change_password`'s defense-in-depth, all session-only — never bearer-token-eligible)
 - Every write action logged to `SunBlockAdminAudit.txt` with IP
 
 See `docs/SECURITY.md` for the full security model.
@@ -223,6 +240,12 @@ See `docs/SECURITY.md` for the full security model.
 ```
 2026-06-06 10:30:00  [AUDIT]  LOGIN  user=admin  ip=192.168.1.10
 ```
+
+2FA actions log under their own action names: `2FA_SETUP_STARTED`, `2FA_ENABLED`,
+`2FA_DISABLED`, `2FA_DISABLE_FAILED`, `LOGIN_PASSWORD_OK_2FA_PENDING`, `2FA_LOGIN`
+(`method=totp|backup_code`), `2FA_CHALLENGE_FAILED`, `BACKUP_CODE_USED`, and
+`BACKUP_CODES_REGENERATED` — useful for spotting brute-force attempts against
+the second factor or unexpected backup-code consumption.
 
 Falls back to stderr if `DATA_DIRECTORY` is not yet set.
 
@@ -239,9 +262,6 @@ Falls back to stderr if `DATA_DIRECTORY` is not yet set.
 ---
 
 ## Known Issues to Fix (Priority Order)
-
-### High
-- **SEC-001** — Default `SECRET_KEY=changeme-secret-key` must be replaced before production. Server warns at startup. See `docs/SECURITY.md`.
 
 ### Medium
 - **BUG-002** — No index on `solardata.Timestamp`. Date-range queries do full table scans above ~5M rows. Fix: `CREATE INDEX IF NOT EXISTS idx_solardata_ts ON solardata(Timestamp);` in `check_db()`.

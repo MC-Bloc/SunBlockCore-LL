@@ -5,6 +5,7 @@ epevermodbus
 python-dotenv
 python-jose[cryptography]
 bcrypt
+pyotp
 slowapi
 jinja2
 openpyxl

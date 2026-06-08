@@ -235,6 +235,22 @@ Simple key-value store. Booleans are serialised as the strings `"true"` / `"fals
 | `sim_mode` | bool string | Whether to use the simulator |
 | `token_expire_hours` | integer string | JWT session lifetime |
 | `admin_password_hash` | bcrypt hash string | Hashed admin password |
+| `secret_key` | random hex string | JWT signing key — auto-generated and persisted on first run if `SECRET_KEY` isn't set in `.env` (see SEC-001 in `docs/SECURITY.md`) |
+| `totp_secret` | base32 string | Active TOTP secret — written only after enrollment is confirmed |
+| `totp_enabled` | bool string | Whether 2FA is currently active |
+
+### `backup_codes` — 2FA recovery codes
+
+```sql
+CREATE TABLE backup_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code_hash TEXT NOT NULL UNIQUE,   -- SHA-256 of the formatted code; raw never stored
+    created_at TEXT NOT NULL,
+    used_at TEXT                      -- NULL until consumed (one-time use)
+);
+```
+
+Created lazily by `db._backup_codes_conn()`, mirroring `_tokens_conn()` exactly — same rationale (fixed-location DB, low write volume, established connection pattern, fast unsalted SHA-256 appropriate for high-entropy random values). Codes are generated 10 at a time via `generate_backup_codes()`, shown to the admin once, and consumed (marked `used_at`) on first successful use by `verify_and_consume_backup_code()`.
 
 ### `api_tokens` — external API authentication
 
@@ -281,15 +297,29 @@ Only field names present in `VIZ_FIELD_META` are accepted (allowlist). All user-
 ```
 POST /api/login  (rate-limited: 5 req/min/IP)
   └─ bcrypt.checkpw(password, ADMIN_PASSWORD_HASH)
-  └─ JWT signed with SECRET_KEY (HS256, exp = now + TOKEN_EXPIRE_HOURS)
-  └─ Set-Cookie: sb_session=<jwt>; HttpOnly; SameSite=Strict; Secure (if configured)
-  └─ admin_log("LOGIN" | "LOGIN_FAILED", user=..., ip=...)
+  └─ if TOTP_ENABLED:
+       └─ JWT { sub, purpose: "2fa_pending", exp: now + 5min }, signed with SECRET_KEY
+       └─ Set-Cookie: sb_2fa_pending=<jwt>; HttpOnly; SameSite=Strict
+       └─ respond { requires_2fa: true } — no sb_session issued yet
+       └─ admin_log("LOGIN_PASSWORD_OK_2FA_PENDING", ...)
+  └─ else:
+       └─ JWT signed with SECRET_KEY (HS256, exp = now + TOKEN_EXPIRE_HOURS)
+       └─ Set-Cookie: sb_session=<jwt>; HttpOnly; SameSite=Strict; Secure (if configured)
+       └─ admin_log("LOGIN" | "LOGIN_FAILED", user=..., ip=...)
+
+POST /api/login/verify-2fa  (rate-limited: 5 req/min/IP) — only reachable mid-2FA-challenge
+  └─ verify_pending_2fa_token(sb_2fa_pending) → must be unexpired, purpose == "2fa_pending"
+  └─ verify_totp_code(code)  OR  verify_and_consume_backup_code(code)
+  └─ on success: delete sb_2fa_pending, issue sb_session exactly as the no-2FA path above
+  └─ admin_log("2FA_LOGIN" / "2FA_CHALLENGE_FAILED" / "BACKUP_CODE_USED", ...)
 
 Subsequent requests (browser)
   └─ Cookie: sb_session=<jwt>
   └─ verify_session() dependency ── FastAPI Depends
-       └─ jwt.decode → validate sub == ADMIN_USERNAME
-       └─ raise 401 if missing/expired/invalid
+       └─ jwt.decode → validate sub == ADMIN_USERNAME AND "purpose" not in payload
+       └─ raise 401 if missing/expired/invalid/pending-2FA
+       (the purpose check is what stops a captured sb_2fa_pending token from
+        ever being replayed as a full session — see "2FA design rationale")
 
 Subsequent requests (external API client)
   └─ Authorization: Bearer sbll_<token>
@@ -312,6 +342,20 @@ The admin panel (Settings → API Tokens) lets the admin generate bearer tokens 
 | **Scope: token = full session-equivalent access, except token/password management**, not a separate permission tier | There is a single admin account (see "Single admin account" in `docs/SECURITY.md`) — a multi-tier permission system would add complexity with no second principal to apply it to. The one carve-out: `POST/GET/DELETE /api/tokens` and `POST /api/settings/password` always require the real session cookie (`verify_session`, not `verify_session_or_token`). This bounds a leaked token's blast radius — it can read/write data and control hardware, but cannot mint replacement tokens, see/revoke other tokens, or change the admin password, so the legitimate admin always retains the ability to shut it down. |
 
 `POST /api/tokens` returns the raw value once (`{id, name, token, message}`); `GET /api/tokens` returns metadata only (id, name, created_at, expires_at, last_used_at — never the hash or raw value); `DELETE /api/tokens/{id}` deletes the row immediately, taking effect on the next request. All three actions are written to the admin audit log (`TOKEN_CREATED`, `TOKEN_REVOKED`).
+
+### 2FA design rationale
+
+Two-factor authentication (Settings → Two-Factor Authentication) adds a TOTP-based second factor (`pyotp`, RFC 6238 — compatible with any standard authenticator app). Several decisions were made explicitly:
+
+| Decision | Reasoning |
+|---|---|
+| **Two-step enrollment (`/setup` then `/confirm`)**, secret held only in memory until confirmed | A single-step "generate and immediately activate" flow risks permanent lockout if the admin mistypes the secret or the authenticator app is misconfigured — there would be no way back in without DB surgery. Requiring a successful code BEFORE persisting `totp_secret`/`totp_enabled` means a failed confirmation changes nothing; the admin just calls `/setup` again. The pending secret lives in `sunblock._pending_totp_secret` (a module-level variable, single-admin model), never written to disk — it cannot "accidentally" activate via a server restart mid-enrollment. |
+| **A distinct "pending" JWT (`purpose: "2fa_pending"`) in its own cookie (`sb_2fa_pending`)**, not a partial/scoped session | This is the crux of the two-step login's security: `verify_session`, `check_session`, and `verify_session_or_token` all explicitly check `"purpose" not in payload`, so a pending token can *never* be replayed as `sb_session` — even if it leaked (e.g. via a misconfigured proxy log) it is useless outside `POST /api/login/verify-2fa`, and even there it only grants a 5-minute window to attempt the second factor (itself rate-limited at 5/min like the first). |
+| **Persist-once-and-reuse, not regenerate-per-login**, for `totp_secret` | TOTP is inherently a shared-secret scheme — the server must hold the same secret the authenticator app was provisioned with, for the lifetime of the enrollment. This mirrors why `SECRET_KEY` is now persisted rather than regenerated (see SEC-001): a stable secret is what makes the feature usable at all. |
+| **Backup codes: 10 single-use SHA-256-hashed codes**, mirroring `api_tokens` | Authenticator devices get lost, factory-reset, or left at home. Without an out-of-band recovery path, a lost device would be a hard lockout (no email/SMS infrastructure exists in this single-admin, offline-capable system). Codes are high-entropy (`secrets.token_hex`), so a fast hash is correct — same reasoning as API tokens. Each is consumed (one-time) on use, and the admin is warned in the application log when ≤2 remain. |
+| **Disable requires BOTH password and a valid code**, session-only (never bearer-token-eligible) | Exactly mirrors `change_password`'s defense-in-depth (see `docs/SECURITY.md` §2). A hijacked session alone (XSS, shared-machine carelessness) must not be able to single-handedly strip the account's strongest protection — and a leaked API bearer token, which is already barred from password/token management, is barred here too. |
+
+`POST /api/2fa/setup` returns `{secret, otpauth_uri}`; `POST /api/2fa/confirm` returns the 10 backup codes once (`{backup_codes, backup_codes_notice}`); `POST /api/2fa/disable` and `POST /api/2fa/backup-codes/regenerate` require a current password+code or code respectively. All five `/api/2fa/*` endpoints are written to the admin audit log under their own action names (see `docs/SECURITY.md` §8 for the full list).
 
 ### Secret admin login path
 
