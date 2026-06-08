@@ -33,7 +33,6 @@ import asyncio
 import csv
 import io
 import os
-import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
@@ -227,26 +226,27 @@ async def not_found(request: Request, exc: HTTPException):
 
 def _page_response(template: str, context: dict) -> "TemplateResponse":
     """
-    Render an HTML page with a per-request CSP nonce.
+    Render an HTML page with a CSP header attached.
 
-    The nonce is injected into the template context so Jinja2 can stamp it on
-    the inline <script> block.  Using a nonce rather than 'unsafe-inline' means
-    only the script we wrote (with the correct nonce attribute) will execute —
-    injected payloads won't have it.
+    All of our JS now lives in same-origin static files (vendor/*, js/sunblock.js)
+    loaded via <script src="..."> — there is no inline <script> left in any
+    template, so 'self' alone covers script loading and we don't need a
+    per-request nonce or 'unsafe-inline' for scripts. (Previously this function
+    minted a nonce to allow exactly one inline <script> block; that block was
+    extracted to public/js/sunblock.js, so the nonce machinery is obsolete.)
 
     We still need 'unsafe-eval' because Alpine.js evaluates x-data/x-on
-    expressions with new Function() internally.
+    expressions with new Function() internally, and 'unsafe-inline' for
+    style-src because Alpine's :style bindings set inline style="" attributes.
     """
-    nonce = secrets.token_urlsafe(16)
     csp = (
         f"default-src 'self'; "
-        f"script-src 'self' 'nonce-{nonce}' 'unsafe-eval'; "
+        f"script-src 'self' 'unsafe-eval'; "
         f"style-src 'self' 'unsafe-inline'; "
         f"img-src 'self' data: blob:; "
         f"connect-src 'self'; "
         f"frame-ancestors 'none'"
     )
-    context["csp_nonce"] = nonce
     response = templates.TemplateResponse(template, context)
     response.headers["Content-Security-Policy"] = csp
     return response
