@@ -1,0 +1,804 @@
+{#
+  Admin panel template — rendered only at the secret ADMIN_PATH route.
+  Extends _base.html and fills in every admin-only block: extra nav tabs,
+  the live-tab admin toolbar, and the full set of admin panels + modals
+  (Parameters, Energy, Settings, History, Visualize, Login modal, Edit
+  Params modal). Never exposed at a predictable URL — see sunblock.py.
+#}
+{% extends "_base.html" %}
+
+{% block referrer_meta %}<meta name="referrer" content="no-referrer" />{% endblock %}
+
+{% block extra_tabs %}
+    <template x-if="authed">
+      <div class="tab" :class="tab === 'parameters' && 'active'" @click="switchTab('parameters')">Parameters</div>
+    </template>
+    <template x-if="authed">
+      <div class="tab" :class="tab === 'energy'     && 'active'" @click="switchTab('energy')">Energy</div>
+    </template>
+    <template x-if="authed">
+      <div class="tab" :class="tab === 'history'    && 'active'" @click="switchTab('history')">History</div>
+    </template>
+    <template x-if="authed">
+      <div class="tab" :class="tab === 'visualize'  && 'active'" @click="switchTab('visualize')">Visualize</div>
+    </template>
+    <template x-if="authed">
+      <div class="tab" :class="tab === 'settings'   && 'active'" @click="switchTab('settings')">Settings</div>
+    </template>
+{% endblock %}
+
+{% block live_admin_extras %}
+    <!-- Admin toolbar (logout) -->
+    <div class="admin-bar" x-show="authed">
+      <span style="color:var(--green)">🔓 Logged in</span>
+      <button class="btn btn-muted" @click="doLogout()">Logout</button>
+    </div>
+
+    <!-- Data directory warning -->
+    <div class="setup-banner" x-show="authed && !dataDirectory">
+      ⚠ Data directory is not set — data collection and history are disabled.
+      <a @click="switchTab('settings')">Configure in Settings →</a>
+    </div>
+
+    <!-- Power profile -->
+    <div class="profile-card" x-show="authed">
+      <div class="profile-header">
+        <span class="card-title" style="margin:0">Power Profile</span>
+        <span x-text="live ? live.PowerProfile : '–'" style="font-size:0.85rem;color:var(--muted)"></span>
+      </div>
+      <div class="profile-btns">
+        <button class="profile-btn" :class="live && live.PowerProfile === 'performance' && 'active'" @click="setProfile('performance')">Performance</button>
+        <button class="profile-btn" :class="live && live.PowerProfile === 'balanced'    && 'active'" @click="setProfile('balanced')">Balanced</button>
+        <button class="profile-btn" :class="live && live.PowerProfile === 'power-saver' && 'active'" @click="setProfile('power-saver')">Power Saver</button>
+      </div>
+    </div>
+{% endblock %}
+
+{% block admin_panels %}
+  <!-- ══ PARAMETERS ══ -->
+  <div class="panel" x-show="tab === 'parameters'">
+    <div class="section-actions">
+      <button class="btn btn-action" :disabled="!authed" @click="syncRtc()">Sync RTC</button>
+      <button class="btn btn-action" :disabled="!authed" @click="openEdit()">Edit Parameters</button>
+      <button class="btn btn-action" @click="loadParams()">↻ Refresh</button>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="card-title">Battery Configuration</div>
+        <template x-if="params">
+          <div>
+            <div class="row"><span class="row-label">Type</span>               <span class="row-value" x-text="params.battery_type"></span></div>
+            <div class="row"><span class="row-label">Capacity</span>           <span class="row-value" x-text="params.battery_capacity + ' Ah'"></span></div>
+            <div class="row"><span class="row-label">Rated Voltage</span>      <span class="row-value" x-text="params.battery_rated_voltage"></span></div>
+            <div class="row"><span class="row-label">Charging Mode</span>      <span class="row-value" x-text="params.charging_mode"></span></div>
+            <div class="row"><span class="row-label">Temp Compensation</span>  <span class="row-value" x-text="params.temperature_compensation_coefficient + ' mV/°C/2V'"></span></div>
+            <div class="row"><span class="row-label">Default Load</span>       <span class="row-value" x-text="params.default_load_on_off"></span></div>
+            <div class="row"><span class="row-label">Equalize Duration</span>  <span class="row-value" x-text="params.equalize_duration + ' min'"></span></div>
+            <div class="row"><span class="row-label">Boost Duration</span>     <span class="row-value" x-text="params.boost_duration + ' min'"></span></div>
+          </div>
+        </template>
+        <div x-show="!params" style="color:var(--muted);font-size:0.85rem">Click Refresh to load</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Controller Status</div>
+        <template x-if="ctrlStatus">
+          <div>
+            <div class="row"><span class="row-label">Controller Temp</span>      <span class="row-value" x-text="ctrlStatus.controller_temperature?.toFixed(1) + ' °C'"></span></div>
+            <div class="row"><span class="row-label">Remote Batt Temp</span>     <span class="row-value" x-text="ctrlStatus.remote_battery_temperature?.toFixed(1) + ' °C'"></span></div>
+            <div class="row"><span class="row-label">Load Voltage</span>         <span class="row-value" x-text="ctrlStatus.load_voltage?.toFixed(2) + ' V'"></span></div>
+            <div class="row"><span class="row-label">Load Current</span>         <span class="row-value" x-text="ctrlStatus.load_current?.toFixed(2) + ' A'"></span></div>
+            <div class="row"><span class="row-label">Rated Charge Current</span> <span class="row-value" x-text="ctrlStatus.rated_charging_current + ' A'"></span></div>
+            <div class="row"><span class="row-label">Day / Night</span>          <span class="row-value" x-text="ctrlStatus.is_day ? '☀ Day' : '🌙 Night'"></span></div>
+            <div class="row"><span class="row-label">RTC</span>                  <span class="row-value" x-text="ctrlStatus.rtc"></span></div>
+          </div>
+        </template>
+        <div x-show="!ctrlStatus" style="color:var(--muted);font-size:0.85rem">Click Refresh to load</div>
+      </div>
+    </div>
+
+    <!-- Voltage thresholds -->
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-title">Voltage Thresholds</div>
+      <template x-if="params && params.voltage_controls">
+        <table class="param-table">
+          <thead><tr><th>Register</th><th>Value</th></tr></thead>
+          <tbody>
+            <template x-for="[key, val] in Object.entries(params.voltage_controls)" :key="key">
+              <tr>
+                <td x-text="key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())"></td>
+                <td x-text="Number(val).toFixed(2) + ' V'"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </template>
+      <div x-show="!params" style="color:var(--muted);font-size:0.85rem;padding:4px 0">Click Refresh to load</div>
+    </div>
+
+    <!-- Equipment status -->
+    <div class="card">
+      <div class="card-title">Equipment Status</div>
+      <template x-if="ctrlStatus">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;font-size:0.85rem">
+          <template x-for="[section, data] in [['Charging', ctrlStatus.charging_status], ['Discharging', ctrlStatus.discharging_status], ['Battery', ctrlStatus.battery_status]]" :key="section">
+            <div>
+              <div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin-bottom:8px" x-text="section"></div>
+              <template x-for="[k, v] in Object.entries(data || {})" :key="k">
+                <div class="row">
+                  <span class="row-label" x-text="k.replace(/_/g,' ')"></span>
+                  <template x-if="typeof v === 'boolean'">
+                    <span :class="v ? 'badge badge-err' : 'badge badge-ok'" x-text="v ? 'Yes' : 'No'"></span>
+                  </template>
+                  <template x-if="typeof v !== 'boolean'">
+                    <span class="row-value" x-text="v"></span>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </template>
+      <div x-show="!ctrlStatus" style="color:var(--muted);font-size:0.85rem">Click Refresh to load</div>
+    </div>
+  </div>
+
+  <!-- ══ ENERGY ══ -->
+  <div class="panel" x-show="tab === 'energy'">
+    <div class="section-actions">
+      <button class="btn btn-action" @click="loadStats()">↻ Refresh</button>
+    </div>
+
+    <div class="energy-period">
+      <h3>Today</h3>
+      <div class="energy-grid">
+        <div class="energy-tile gen"><div class="label">Generated</div><div class="value" x-text="stats ? fmt(stats.generated_today) : '–'"></div><div class="unit">kWh</div></div>
+        <div class="energy-tile con"><div class="label">Consumed</div> <div class="value" x-text="stats ? fmt(stats.consumed_today) : '–'"></div><div class="unit">kWh</div></div>
+        <div class="energy-tile">    <div class="label">PV Max</div>   <div class="value" x-text="stats ? fmt(stats.pv_voltage_max_today) : '–'"></div><div class="unit">V</div></div>
+        <div class="energy-tile">    <div class="label">PV Min</div>   <div class="value" x-text="stats ? fmt(stats.pv_voltage_min_today) : '–'"></div><div class="unit">V</div></div>
+        <div class="energy-tile">    <div class="label">Batt Max</div> <div class="value" x-text="stats ? fmt(stats.batt_voltage_max_today) : '–'"></div><div class="unit">V</div></div>
+        <div class="energy-tile">    <div class="label">Batt Min</div> <div class="value" x-text="stats ? fmt(stats.batt_voltage_min_today) : '–'"></div><div class="unit">V</div></div>
+      </div>
+    </div>
+
+    <div class="energy-period">
+      <h3>This Month</h3>
+      <div class="energy-grid">
+        <div class="energy-tile gen"><div class="label">Generated</div><div class="value" x-text="stats ? fmt(stats.generated_this_month) : '–'"></div><div class="unit">kWh</div></div>
+        <div class="energy-tile con"><div class="label">Consumed</div> <div class="value" x-text="stats ? fmt(stats.consumed_this_month) : '–'"></div><div class="unit">kWh</div></div>
+      </div>
+    </div>
+
+    <div class="energy-period">
+      <h3>This Year</h3>
+      <div class="energy-grid">
+        <div class="energy-tile gen"><div class="label">Generated</div><div class="value" x-text="stats ? fmt(stats.generated_this_year) : '–'"></div><div class="unit">kWh</div></div>
+        <div class="energy-tile con"><div class="label">Consumed</div> <div class="value" x-text="stats ? fmt(stats.consumed_this_year) : '–'"></div><div class="unit">kWh</div></div>
+      </div>
+    </div>
+
+    <div class="energy-period">
+      <h3>All Time</h3>
+      <div class="energy-grid">
+        <div class="energy-tile gen"><div class="label">Total Generated</div><div class="value" x-text="stats ? fmt(stats.total_generated) : '–'"></div><div class="unit">kWh</div></div>
+        <div class="energy-tile con"><div class="label">Total Consumed</div> <div class="value" x-text="stats ? fmt(stats.total_consumed) : '–'"></div><div class="unit">kWh</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ SETTINGS ══ -->
+  <div class="panel" x-show="tab === 'settings'">
+
+    <template x-if="!authed">
+      <div class="settings-section" style="text-align:center;padding:40px 20px">
+        <div style="font-size:1.6rem;margin-bottom:10px">🔒</div>
+        <div style="color:var(--muted);margin-bottom:16px">Login required to manage settings.</div>
+      </div>
+    </template>
+
+    <template x-if="authed">
+      <div>
+
+        <!-- Data Directory -->
+        <div class="settings-section" :style="!dataDirectory ? 'border-color: rgba(245,158,11,0.5)' : ''">
+          <div class="settings-title" :style="!dataDirectory ? 'color: var(--accent)' : ''">
+            Data Directory<span x-show="!dataDirectory"> — required</span>
+          </div>
+          <div x-show="!dataDirectory" class="feedback-err" style="margin-bottom:12px">
+            Set a directory path where SunBlockCore will store the database and logs.
+            The directory will be created automatically.
+          </div>
+          <div x-show="settingsMsg && settingsMsgDataDir" :class="settingsMsgOk ? 'feedback-ok' : 'feedback-err'" x-text="settingsMsg"></div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Directory Path</div>
+              <div class="settings-hint" x-show="dataDirectory">Current: <span x-text="dataDirectory"></span></div>
+              <div class="settings-hint" x-show="!dataDirectory" style="color:var(--accent)">No directory configured — data collection is disabled</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;flex:1;max-width:420px;margin-left:16px">
+              <input class="settings-input" type="text" style="width:100%;text-align:left"
+                     x-model="dataDirDraft"
+                     placeholder="/opt/sunblock/data"
+                     @keydown.enter="saveDataDir()" />
+              <button class="btn btn-action" @click="saveDataDir()"
+                      :style="!dataDirectory ? 'border-color:var(--accent);color:var(--accent)' : ''">
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Polling -->
+        <div class="settings-section">
+          <div class="settings-title">Polling</div>
+          <div x-show="settingsMsg" :class="settingsMsgOk ? 'feedback-ok' : 'feedback-err'" x-text="settingsMsg"></div>
+
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Read Interval</div>
+              <div class="settings-hint">Seconds between hardware reads (1–3600) &middot; env: <span x-text="envDefaults.read_interval"></span>s</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <input class="settings-input" type="number" min="1" max="3600"
+                     x-model.number="settingsDraft.read_interval" />
+              <button class="btn btn-action" @click="saveSetting('read_interval', settingsDraft.read_interval)">Save</button>
+              <button class="btn-reset" title="Reset to .env value" @click="resetSetting('read_interval')">↺</button>
+            </div>
+          </div>
+
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Data Management</div>
+              <div class="settings-hint">Write readings to SQLite database &middot; env: <span x-text="envDefaults.data_man ? 'on' : 'off'"></span></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <label class="toggle" title="Toggle data management">
+                <input type="checkbox" :checked="settingsDraft.data_man"
+                       @change="saveSetting('data_man', $event.target.checked)" />
+                <span class="toggle-slider"></span>
+              </label>
+              <button class="btn-reset" title="Reset to .env value" @click="resetSetting('data_man')">↺</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Simulator -->
+        <div class="settings-section">
+          <div class="settings-title">Simulator</div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Simulator Mode</div>
+              <div class="settings-hint">Generate synthetic data — requires restart of polling if hardware is absent &middot; env: <span x-text="envDefaults.sim_mode ? 'on' : 'off'"></span></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <label class="toggle" title="Toggle simulator mode">
+                <input type="checkbox" :checked="settingsDraft.sim_mode"
+                       @change="saveSetting('sim_mode', $event.target.checked)" />
+                <span class="toggle-slider"></span>
+              </label>
+              <button class="btn-reset" title="Reset to .env value" @click="resetSetting('sim_mode')">↺</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Session -->
+        <div class="settings-section">
+          <div class="settings-title">Session</div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Token Expiry</div>
+              <div class="settings-hint">Hours before login session expires (1–720) &middot; env: <span x-text="envDefaults.token_expire_hours"></span>h</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <input class="settings-input" type="number" min="1" max="720"
+                     x-model.number="settingsDraft.token_expire_hours" />
+              <button class="btn btn-action" @click="saveSetting('token_expire_hours', settingsDraft.token_expire_hours)">Save</button>
+              <button class="btn-reset" title="Reset to .env value" @click="resetSetting('token_expire_hours')">↺</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Password -->
+        <div class="settings-section">
+          <div class="settings-title">Change Password</div>
+          <div x-show="pwMsg" :class="pwMsgOk ? 'feedback-ok' : 'feedback-err'" x-text="pwMsg"></div>
+          <div class="field"><label>Current password</label>
+            <input type="password" x-model="pwForm.current" autocomplete="current-password" />
+          </div>
+          <div class="field-grid" style="margin-top:10px">
+            <div class="field"><label>New password</label>
+              <input type="password" x-model="pwForm.next" autocomplete="new-password" />
+            </div>
+            <div class="field"><label>Confirm new password</label>
+              <input type="password" x-model="pwForm.confirm" autocomplete="new-password"
+                     @keydown.enter="changePassword()" />
+            </div>
+          </div>
+          <div style="display:flex;justify-content:flex-end;margin-top:14px">
+            <button class="btn btn-action" @click="changePassword()">Update Password</button>
+          </div>
+        </div>
+
+        <!-- API Tokens -->
+        <div class="settings-section">
+          <div class="settings-title">API Tokens</div>
+          <div class="settings-hint" style="margin-bottom:14px">
+            Generate bearer tokens to call SunBlockCore-LL's API endpoints from outside the
+            browser (scripts, dashboards, automations). Send them as
+            <code>Authorization: Bearer &lt;token&gt;</code>. A token grants the same API
+            access as an admin session — keep it secret and revoke it if it leaks.
+          </div>
+          <div x-show="tokenMsg" :class="tokenMsgOk ? 'feedback-ok' : 'feedback-err'" x-text="tokenMsg"></div>
+
+          <template x-if="newToken">
+            <div class="feedback-ok" style="margin-bottom:14px;display:flex;flex-direction:column;gap:8px">
+              <div>
+                Token "<span x-text="newToken.name"></span>" created. Copy it now — for security
+                it will <strong>not be shown again</strong>.
+              </div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <code style="flex:1;overflow-x:auto;padding:6px 10px;background:rgba(0,0,0,0.25);border-radius:6px" x-text="newToken.token"></code>
+                <button class="btn btn-action" @click="copyToken(newToken.token)">Copy</button>
+              </div>
+            </div>
+          </template>
+
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Generate New Token</div>
+              <div class="settings-hint">Give it a descriptive name and choose how long it stays valid</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+              <input class="settings-input" type="text" style="width:160px;text-align:left"
+                     x-model="tokenForm.name" placeholder="e.g. grafana-export"
+                     @keydown.enter="createToken()" />
+              <select class="settings-input" x-model.number="tokenForm.expires_in_hours">
+                <option :value="24">1 day</option>
+                <option :value="24 * 7">1 week</option>
+                <option :value="24 * 30">30 days</option>
+                <option :value="24 * 90">90 days</option>
+                <option :value="24 * 365">1 year</option>
+                <option :value="null">Never expires</option>
+              </select>
+              <button class="btn btn-action" @click="createToken()">Generate</button>
+            </div>
+          </div>
+
+          <table class="param-table" style="margin-top:14px" x-show="tokens.length">
+            <thead>
+              <tr><th>Name</th><th>Created</th><th>Expires</th><th>Last used</th><th></th></tr>
+            </thead>
+            <tbody>
+              <template x-for="t in tokens" :key="t.id">
+                <tr>
+                  <td x-text="t.name"></td>
+                  <td x-text="t.created_at ? t.created_at.replace('T', ' ').slice(0, 19) : '–'"></td>
+                  <td x-text="t.expires_at ? t.expires_at.replace('T', ' ').slice(0, 19) : 'Never'"></td>
+                  <td x-text="t.last_used_at ? t.last_used_at.replace('T', ' ').slice(0, 19) : 'Never'"></td>
+                  <td><button class="btn-reset" title="Revoke" @click="revokeToken(t.id)">✕</button></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+          <div class="settings-hint" x-show="!tokens.length" style="margin-top:10px">No API tokens yet.</div>
+        </div>
+
+        <!-- Two-Factor Authentication -->
+        <div class="settings-section">
+          <div class="settings-title">Two-Factor Authentication</div>
+          <div class="settings-hint" style="margin-bottom:14px">
+            Require a one-time code from an authenticator app (Google Authenticator, Authy, 1Password, etc.)
+            in addition to your password when logging in. Strongly recommended if this dashboard
+            is reachable beyond a fully trusted network — it controls real solar hardware.
+          </div>
+          <div x-show="twofaMsg" :class="twofaMsgOk ? 'feedback-ok' : 'feedback-err'" x-text="twofaMsg" style="margin-bottom:10px"></div>
+
+          <!-- Status / disable, when enabled and no enrollment in progress -->
+          <template x-if="twofa.enabled && !twofaSetup && !twofaBackupCodes">
+            <div>
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Status</div>
+                  <div class="settings-hint">
+                    <span style="color:var(--green)">●</span> Enabled —
+                    <span x-text="twofa.backup_codes_remaining"></span> unused backup code(s) remaining
+                  </div>
+                </div>
+              </div>
+
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Regenerate backup codes</div>
+                  <div class="settings-hint">Invalidates all existing codes and issues 10 new ones. Requires a current 2FA code.</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px">
+                  <input class="settings-input" type="text" style="width:120px" placeholder="123456"
+                         x-model="twofaRegenCode" inputmode="numeric" />
+                  <button class="btn btn-action" @click="regenerateBackupCodes()">Regenerate</button>
+                </div>
+              </div>
+
+              <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">
+                <div class="settings-label" style="margin-bottom:8px">Disable 2FA</div>
+                <div class="settings-hint" style="margin-bottom:10px">
+                  Requires both your current password and a valid code — defense in depth, so a
+                  hijacked browser session alone can't strip this protection.
+                </div>
+                <div class="field-grid">
+                  <div class="field"><label>Current password</label>
+                    <input type="password" x-model="twofaDisableForm.password" autocomplete="current-password" />
+                  </div>
+                  <div class="field"><label>2FA code</label>
+                    <input type="text" x-model="twofaDisableForm.code" inputmode="numeric" placeholder="123456 or backup code" />
+                  </div>
+                </div>
+                <div style="display:flex;justify-content:flex-end;margin-top:10px">
+                  <button class="btn-danger" @click="disableTwoFA()">Disable 2FA</button>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- Backup codes — shown once, right after enable / regenerate -->
+          <template x-if="twofaBackupCodes">
+            <div class="feedback-ok" style="display:flex;flex-direction:column;gap:10px">
+              <div><strong>Save these backup codes now</strong> — they will not be shown again. Each one logs you in
+                once if you lose access to your authenticator app.</div>
+              <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px">
+                <template x-for="c in twofaBackupCodes" :key="c">
+                  <code style="padding:6px 10px;background:rgba(0,0,0,0.25);border-radius:6px;text-align:center" x-text="c"></code>
+                </template>
+              </div>
+              <div style="display:flex;justify-content:flex-end">
+                <button class="btn btn-action" @click="twofaBackupCodes = null; loadTwoFAStatus()">I've saved these — done</button>
+              </div>
+            </div>
+          </template>
+
+          <!-- Enrollment in progress -->
+          <template x-if="twofaSetup">
+            <div>
+              <div class="settings-hint" style="margin-bottom:10px">
+                1. Scan this QR code with your authenticator app (or enter the secret manually).<br>
+                2. Enter the 6-digit code it generates below to confirm and activate 2FA.
+              </div>
+              <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-bottom:14px">
+                <div x-ref="twofaQr" style="background:#fff;padding:10px;border-radius:8px;display:inline-block"></div>
+                <div style="flex:1;min-width:220px">
+                  <div class="settings-label">Manual entry secret</div>
+                  <code style="display:inline-block;margin-top:4px;padding:6px 10px;background:rgba(0,0,0,0.25);border-radius:6px;word-break:break-all" x-text="twofaSetup.secret"></code>
+                </div>
+              </div>
+              <div class="field-grid">
+                <div class="field"><label>6-digit code from your app</label>
+                  <input type="text" x-model="twofaConfirmCode" inputmode="numeric" placeholder="123456"
+                         @keydown.enter="confirmTwoFA()" />
+                </div>
+              </div>
+              <div class="modal-actions" style="margin-top:14px">
+                <button class="btn-secondary" @click="cancelTwoFASetup()">Cancel</button>
+                <button class="btn-primary"   @click="confirmTwoFA()">Confirm &amp; Enable</button>
+              </div>
+            </div>
+          </template>
+
+          <!-- Not enabled, nothing in progress -->
+          <template x-if="!twofa.enabled && !twofaSetup && !twofaBackupCodes">
+            <div class="settings-row">
+              <div>
+                <div class="settings-label">Status</div>
+                <div class="settings-hint"><span style="color:var(--muted)">●</span> Not enabled</div>
+              </div>
+              <button class="btn btn-action" @click="startTwoFASetup()">Enable Two-Factor Authentication</button>
+            </div>
+          </template>
+        </div>
+
+      </div>
+    </template>
+  </div>
+
+  <!-- ══ HISTORY ══ -->
+  <div class="panel" x-show="tab === 'history'" style="max-width:1200px">
+
+    <!-- Toolbar -->
+    <div class="hist-toolbar">
+      <input class="hist-input" type="date" x-model="histFilter.from" title="From date" />
+      <input class="hist-input" type="date" x-model="histFilter.to"   title="To date" />
+      <select class="hist-select" x-model.number="histFilter.limit">
+        <option value="50">50 rows</option>
+        <option value="100">100 rows</option>
+        <option value="250">250 rows</option>
+        <option value="500">500 rows</option>
+      </select>
+      <select class="hist-select" x-model="histFilter.order">
+        <option value="desc">Newest first</option>
+        <option value="asc">Oldest first</option>
+      </select>
+      <button class="btn btn-action" @click="loadHistory(0)" :disabled="histLoading">
+        <span x-text="histLoading ? 'Loading…' : 'Load'"></span>
+      </button>
+      <button class="btn btn-action" x-show="history" @click="loadHistory(history.offset)">↻</button>
+      <!-- Download group -->
+      <template x-if="authed && dataDirectory">
+        <div style="display:flex;gap:4px;align-items:center">
+          <a href="/api/data/download"
+             download="SunBlockCore-LL.db"
+             class="btn btn-action"
+             style="text-decoration:none"
+             title="Download raw SQLite database">⬇ .db</a>
+          <a href="/api/data/download/csv"
+             download="SunBlockCore-LL.csv"
+             class="btn btn-action"
+             style="text-decoration:none"
+             title="Download all rows as CSV">⬇ .csv</a>
+          <a href="/api/data/download/xlsx"
+             download="SunBlockCore-LL.xlsx"
+             class="btn btn-action"
+             style="text-decoration:none"
+             title="Download all rows as Excel spreadsheet">⬇ .xlsx</a>
+        </div>
+      </template>
+      <template x-if="!authed && dataDirectory">
+        <span class="btn btn-action"
+              style="opacity:0.45;cursor:not-allowed"
+              title="Login to download">⬇ Download</span>
+      </template>
+    </div>
+
+    <!-- Summary + pagination -->
+    <template x-if="history">
+      <div>
+        <div class="hist-summary">
+          <span x-show="history.total === 0" style="color:var(--muted)">No records found.</span>
+          <span x-show="history.total > 0">
+            Showing
+            <strong x-text="history.total === 0 ? 0 : history.offset + 1"></strong>–<strong x-text="Math.min(history.offset + history.limit, history.total)"></strong>
+            of <strong x-text="history.total.toLocaleString()"></strong> records
+          </span>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-action"
+                    :disabled="history.offset === 0 || histLoading"
+                    @click="histPage(-1)">← Prev</button>
+            <button class="btn btn-action"
+                    :disabled="history.offset + history.limit >= history.total || histLoading"
+                    @click="histPage(1)">Next →</button>
+          </div>
+        </div>
+
+        <div class="hist-table-wrap">
+          <template x-if="history.rows.length === 0">
+            <div class="hist-empty">No records in this range.</div>
+          </template>
+          <template x-if="history.rows.length > 0">
+            <table class="hist-table">
+              <thead>
+                <tr>
+                  <th style="text-align:left">Timestamp</th>
+                  <th>PV V</th>
+                  <th>PV A</th>
+                  <th>PV W</th>
+                  <th>Batt V</th>
+                  <th>Batt °C</th>
+                  <th>Charge W</th>
+                  <th>SOC %</th>
+                  <th>Batt A</th>
+                  <th>Load W</th>
+                  <th>CPU W</th>
+                  <th style="text-align:left">Profile</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="(row, i) in history.rows" :key="history.offset + i">
+                  <tr>
+                    <td x-text="row.Timestamp"></td>
+                    <td x-text="row.PVVoltage     != null ? Number(row.PVVoltage).toFixed(2)          : '–'"></td>
+                    <td x-text="row.PVCurrent     != null ? Number(row.PVCurrent).toFixed(2)          : '–'"></td>
+                    <td x-text="row.PVPower       != null ? Number(row.PVPower).toFixed(1)            : '–'"></td>
+                    <td x-text="row.BattVoltage   != null ? Number(row.BattVoltage).toFixed(2)        : '–'"></td>
+                    <td x-text="row.BattTemperature != null ? Number(row.BattTemperature).toFixed(1)  : '–'"></td>
+                    <td x-text="row.BattChargePower != null ? Number(row.BattChargePower).toFixed(1)  : '–'"></td>
+                    <td x-text="row.BattPercentage"></td>
+                    <td x-text="row.BattOverallCurrent != null ? Number(row.BattOverallCurrent).toFixed(2) : '–'"></td>
+                    <td x-text="row.LoadPower     != null ? Number(row.LoadPower).toFixed(1)          : '–'"></td>
+                    <td x-text="row.CPUPowerDraw  != null ? Number(row.CPUPowerDraw).toFixed(1)       : '–'"></td>
+                    <td style="text-align:left" x-text="row.PowerProfile || '–'"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </template>
+        </div>
+      </div>
+    </template>
+
+    <!-- Initial state — nothing loaded yet -->
+    <template x-if="!history && !histLoading">
+      <div class="card hist-placeholder">
+        <div class="icon">🗄</div>
+        <div>Select a date range and click <strong>Load</strong> to browse records.</div>
+        <div style="font-size:0.78rem;margin-top:6px;color:var(--muted)">Leave dates empty to show the most recent rows.</div>
+      </div>
+    </template>
+
+    <template x-if="histLoading && !history">
+      <div class="card hist-placeholder"><div>Loading…</div></div>
+    </template>
+
+  </div>
+
+  <!-- ══ VISUALIZE ══ -->
+  <div class="panel" x-show="tab === 'visualize'" style="max-width:1200px">
+
+    <!-- Controls card -->
+    <div class="settings-section" style="margin-bottom:16px">
+      <div class="settings-title">Chart Configuration</div>
+
+      <!-- Row 1: date range + sample rate + smoothing -->
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;padding:12px 0;border-bottom:1px solid var(--border)">
+
+        <div>
+          <div style="font-size:0.76rem;color:var(--muted);margin-bottom:4px">From</div>
+          <input class="hist-input" type="date" x-model="vizFilter.from" />
+        </div>
+        <div>
+          <div style="font-size:0.76rem;color:var(--muted);margin-bottom:4px">To</div>
+          <input class="hist-input" type="date" x-model="vizFilter.to" />
+        </div>
+
+        <div>
+          <div style="font-size:0.76rem;color:var(--muted);margin-bottom:4px">Sample every</div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input class="settings-input" type="number" min="1" max="3600" x-model.number="vizFilter.sample" style="width:70px" />
+            <span style="font-size:0.82rem;color:var(--muted)">s</span>
+          </div>
+        </div>
+
+        <div>
+          <div style="font-size:0.76rem;color:var(--muted);margin-bottom:4px">Smooth (MA window)</div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input class="settings-input" type="number" min="0" max="300" x-model.number="vizFilter.smooth" style="width:70px"
+                   :disabled="!vizFilter.smoothEnabled" />
+            <label class="toggle" title="Toggle smoothing" style="flex-shrink:0">
+              <input type="checkbox" x-model="vizFilter.smoothEnabled" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div>
+          <div style="font-size:0.76rem;color:var(--muted);margin-bottom:4px">Spike filter</div>
+          <label class="toggle" title="Remove hardware glitches on PV and battery readings">
+            <input type="checkbox" x-model="vizFilter.filterSpikes" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+      </div>
+
+      <!-- Row 2: variable checkboxes -->
+      <div style="padding:12px 0 8px">
+        <div style="font-size:0.76rem;color:var(--muted);margin-bottom:10px">Variables</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">
+          <template x-for="[key, meta] in Object.entries(vizFields)" :key="key">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.85rem;padding:6px 10px;border:1px solid var(--border);border-radius:6px;transition:border-color 0.15s"
+                   :style="vizSelected[key] ? 'border-color:var(--accent);background:rgba(245,158,11,0.06)' : ''">
+              <input type="checkbox" :checked="vizSelected[key]"
+                     @change="vizSelected[key] = $event.target.checked"
+                     style="accent-color:var(--accent)" />
+              <span>
+                <span x-text="meta.label"></span>
+                <span style="color:var(--muted);font-size:0.75rem" x-text="' (' + meta.unit + ')'"></span>
+              </span>
+            </label>
+          </template>
+        </div>
+      </div>
+
+      <!-- Plot button + feedback -->
+      <div style="display:flex;align-items:center;gap:12px;padding-top:8px">
+        <button class="btn btn-action" @click="plotViz()" :disabled="vizLoading"
+                style="padding:8px 20px;border-color:var(--accent);color:var(--accent)">
+          <span x-text="vizLoading ? 'Loading…' : 'Plot'"></span>
+        </button>
+        <span x-show="vizInfo" style="font-size:0.8rem;color:var(--muted)"
+              x-text="vizInfo ? vizInfo.sampled_rows.toLocaleString() + ' points plotted (' + vizInfo.total_rows.toLocaleString() + ' in range, sampled every ' + vizFilter.sample + 's)' : ''"></span>
+        <span x-show="vizError" class="feedback-err" style="margin:0" x-text="vizError"></span>
+      </div>
+    </div>
+
+    <!-- Chart -->
+    <div class="chart-wrap" x-show="vizHasData">
+      <div id="chart-viz"></div>
+    </div>
+
+    <!-- Empty state -->
+    <template x-if="!vizHasData && !vizLoading">
+      <div class="card hist-placeholder">
+        <div class="icon">📈</div>
+        <div>Select a date range and variables, then click <strong>Plot</strong>.</div>
+        <div style="font-size:0.78rem;margin-top:6px;color:var(--muted)">
+          Use the sample rate to reduce density — 5 s is a good starting point for day-long views.
+        </div>
+      </div>
+    </template>
+    <template x-if="vizLoading && !vizHasData">
+      <div class="card hist-placeholder"><div>Loading…</div></div>
+    </template>
+
+  </div>
+
+  <!-- ══ LOGIN MODAL ══ -->
+  <div class="overlay" :class="loginOpen && 'open'" @click.self="closeLogin()">
+    <div class="modal" @keydown.escape.window="closeLogin()">
+      <template x-if="loginStep === 'credentials'">
+        <div>
+          <h2>Admin Login</h2>
+          <div class="field">
+            <label>Username</label>
+            <input type="text" x-model="loginUser" autocomplete="username" x-ref="loginUserInput" />
+          </div>
+          <div class="field">
+            <label>Password</label>
+            <input type="password" x-model="loginPass" autocomplete="current-password" @keydown.enter="doLogin()" />
+          </div>
+          <div class="form-error" x-text="loginError"></div>
+          <div class="modal-actions">
+            <button class="btn-secondary" x-show="!adminMode" @click="closeLogin()">Cancel</button>
+            <button class="btn-primary"   @click="doLogin()">Login</button>
+          </div>
+        </div>
+      </template>
+
+      <template x-if="loginStep === '2fa'">
+        <div>
+          <h2>Two-Factor Authentication</h2>
+          <div class="settings-hint" style="margin-bottom:10px">
+            Enter the 6-digit code from your authenticator app, or one of your backup codes
+            (format <code>XXXX-XXXX-XXXX-XXXX</code>) if you've lost access to it.
+          </div>
+          <div class="field">
+            <label>Authentication code</label>
+            <input type="text" x-model="login2faCode" inputmode="numeric" autocomplete="one-time-code"
+                   placeholder="123456" autofocus @keydown.enter="doVerify2FA()" />
+          </div>
+          <div class="form-error" x-text="loginError"></div>
+          <div class="modal-actions">
+            <button class="btn-secondary" @click="loginStep = 'credentials'; loginError = ''">Back</button>
+            <button class="btn-primary"   @click="doVerify2FA()">Verify</button>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <!-- ══ EDIT PARAMS MODAL ══ -->
+  <div class="overlay" :class="editOpen && 'open'" @click.self="editOpen = false">
+    <div class="modal" @keydown.escape.window="editOpen = false">
+      <h2>Edit Controller Parameters</h2>
+
+      <div class="modal-section">Battery</div>
+      <div class="field-grid">
+        <div class="field"><label>Capacity (Ah)</label>              <input type="number" x-model.number="editForm.battery_capacity" min="1" step="1" /></div>
+        <div class="field"><label>Temp Compensation (mV/°C/2V)</label><input type="number" x-model.number="editForm.temperature_compensation_coefficient" step="0.01" /></div>
+      </div>
+
+      <div class="modal-section">Voltage Thresholds (V)</div>
+      <div class="field-grid">
+        <template x-for="key in vcKeys" :key="key">
+          <div class="field">
+            <label x-text="key.replace(/_voltage$/, '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())"></label>
+            <input type="number" step="0.01" :value="editForm.voltage_controls[key]" @input="editForm.voltage_controls[key] = parseFloat($event.target.value)" />
+          </div>
+        </template>
+      </div>
+
+      <div class="form-error" x-text="editError"></div>
+      <div class="modal-actions">
+        <button class="btn-secondary" @click="editOpen = false">Cancel</button>
+        <button class="btn-primary"   @click="saveParams()">Save</button>
+      </div>
+    </div>
+  </div>
+{% endblock %}

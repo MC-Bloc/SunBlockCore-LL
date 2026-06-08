@@ -256,7 +256,7 @@ def _page_response(template: str, context: dict) -> "TemplateResponse":
 
 @app.get("/")
 async def index(request: Request):
-    return _page_response("index.html", {
+    return _page_response("public.html", {
         "request":          request,
         "is_authenticated": check_session(request),
         "sim_mode":         config.SIM_MODE,
@@ -268,8 +268,10 @@ async def index(request: Request):
 
 async def _admin_page(request: Request):
     """Full admin panel — all tabs and modals rendered server-side (admin_mode=True).
-    Registered at the secret ADMIN_PATH slug; not exposed at any predictable URL."""
-    return _page_response("index.html", {
+    Registered at the secret ADMIN_PATH slug; not exposed at any predictable URL.
+    Templates: admin.html extends _base.html and fills in every admin-only block —
+    see templates/_base.html / templates/admin.html / templates/public.html."""
+    return _page_response("admin.html", {
         "request":          request,
         "is_authenticated": check_session(request),
         "sim_mode":         config.SIM_MODE,

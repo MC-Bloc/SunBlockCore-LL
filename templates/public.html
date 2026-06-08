@@ -1,0 +1,8 @@
+{#
+  Public dashboard template — rendered at "/" for unauthenticated/anonymous
+  visitors. Extends _base.html and intentionally overrides nothing: every
+  admin-only block (extra nav tabs, live-tab admin toolbar, full admin
+  panels + modals) stays empty, so none of that markup is ever sent to
+  the public route. See sunblock.py for routing.
+#}
+{% extends "_base.html" %}
