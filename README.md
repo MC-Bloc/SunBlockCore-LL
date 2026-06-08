@@ -115,9 +115,15 @@ db.py                SQLite: telemetry writes, settings persistence, history & v
 hardware.py          Epever controller communication, power profiles, parameter r/w
 simulator.py         Synthetic data generation from real deployment baselines
 templates/
-  index.html         Single-page Alpine.js admin panel (Live, Parameters, Energy, Settings, History, Visualize)
+  _base.html         Shared page shell (head, header, Live tab, Alpine bootstrap)
+  admin.html         Full admin panel (Parameters, Energy, Settings, History, Visualize,
+                     login + edit-params modals) — extends _base.html; secret-path only
+  public.html        Public live view — extends _base.html, overrides nothing
   404.html           Custom 404 page
-public/vendor/       Vendored JS (Alpine.js, Socket.IO, Plotly basic bundle)
+public/
+  css/index.css      Extracted page styles
+  js/sunblock.js     Extracted Alpine.js admin-panel component
+  vendor/            Vendored JS (Alpine.js, Socket.IO, Plotly basic bundle, qrcodejs)
 scripts/
   deploy.sh          Automated Ubuntu/systemd deployment
   vendor.sh          Downloads and pins all frontend vendor assets

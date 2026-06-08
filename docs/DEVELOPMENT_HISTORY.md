@@ -323,6 +323,48 @@ Triggered by the operator's plan — a publicly-reachable admin panel that contr
 
 ---
 
+## Session 11 — Frontend Modularization (Template Split + Asset Extraction)
+
+Triggered by the operator noticing that `templates/index.html` had grown to ~1850 lines after the Session 10 2FA additions and asking whether it could be modularized. Two changes, both purely structural — no behavioural change to the running app (verified live both before and after each step).
+
+### Part 1 — Split into separate public / admin templates via Jinja2 inheritance
+
+**Problem:** a single `index.html` rendered two very different pages (`GET /` vs. the secret admin route) by branching on a server-side `admin_mode` variable, with `{% if admin_mode %}...{% endif %}` guards wrapping ~750 lines of admin-only markup (5 tab panels + login modal + edit-params modal). The operator specifically wanted the public and admin variants to be **separate files**.
+
+**Why inheritance instead of two full copies:** a literal copy-paste split would require maintaining two near-identical ~1000-line files, duplicating the shared CSS, header, Live tab, and the ~700-line Alpine component. Template inheritance gives the requested file-level separation — admin markup now physically lives in its own file, and is provably absent from the public response — without duplicating the shared chrome.
+
+**Implementation:**
+- `templates/_base.html` — extracted shared shell (head, header, Live tab/panel, Alpine `x-data` bootstrap, script tags), with the four `{% if admin_mode %}` regions replaced by named empty Jinja2 blocks: `referrer_meta`, `extra_tabs`, `live_admin_extras`, `admin_panels`.
+- `templates/admin.html` — `{% extends "_base.html" %}`, overriding all four blocks with the original admin-only content verbatim (the `<meta name="referrer" content="no-referrer">` tag, the 5 admin nav tabs, the live-tab admin toolbar/power-profile card/data-dir warning, and the 5 admin panels + both modals).
+- `templates/public.html` — `{% extends "_base.html" %}` with **no overrides at all**; since the base's blocks default to empty, the rendered output structurally cannot contain any admin markup (it's not hidden by CSS/`x-show` — it's never generated or transmitted).
+- `sunblock.py` — `index()` now renders `"public.html"`, `_admin_page()` now renders `"admin.html"` (both still pass `admin_mode` in context for Alpine's `initialAdminMode` / `authed`-driven UI behaviour). Old `templates/index.html` deleted.
+
+**Verified:** rendered both templates directly through Jinja2 and confirmed zero admin-marker strings (`PARAMETERS`, `Admin Login`, `Edit Controller Parameters`, `🔓 Logged in`) in the public output vs. all four present in the admin output; then booted a live server and curl'd both routes, confirming 200s and the same marker split over the wire.
+
+### Part 2 — Extract CSS and the Alpine component to static files
+
+**Problem:** even after the template split, `_base.html` still contained the entire page `<style>` block (~170 lines) and the entire `Alpine.data('sunblock', ...)` component (~780 lines) inline — together the bulk of what made the original file unwieldy.
+
+**Why this was safe to do verbatim:** grepped both blocks for Jinja2 `{{ }}`/`{% %}` syntax — neither contains any. The `initial*` values the Alpine component needs are passed in purely as **constructor arguments** from the `x-data='sunblock(...)'` call in `_base.html`, so the component body itself has no dependency on server-side templating.
+
+**Implementation:**
+- `public/css/index.css` (168 lines) — the `<style>` block contents, lifted out verbatim. `_base.html` now has `<link rel="stylesheet" href="/static/css/index.css" />`.
+- `public/js/sunblock.js` (781 lines) — the `Alpine.data('sunblock', ...)` component plus its supporting constants (`VC_KEYS`, `CHART_VARS`, `PLOTLY_LAYOUT`, `PLOTLY_CONFIG`) and the `alpine:init` listener wrapper, lifted out verbatim. `_base.html` now has `<script src="/static/js/sunblock.js"></script>`. Both assets are served through the existing `app.mount("/static", StaticFiles(directory="public"))`.
+- `_base.html` shrank from 1062 → 110 lines as a result.
+
+**Bonus simplification — CSP nonce removal:** the only inline `<script>` left anywhere was the one just extracted, and `_page_response()` existed partly to mint a per-request `secrets.token_urlsafe(16)` nonce solely to authorize that one block (`script-src 'nonce-<n>'` + `<script nonce="...">`). With it gone, `'self'` alone covers script loading (everything is now a same-origin file), so the nonce generation, the `csp_nonce` template-context injection, and the now-unused `import secrets` were all removed from `sunblock.py`. CSP simplified to `script-src 'self' 'unsafe-eval'`. This is a net security simplification, not a weakening — there's no longer any `'nonce-...'`/inline-script exception to forge or leak; injected inline scripts are now unconditionally blocked.
+
+**Verified:** booted a live server; confirmed `/`, the admin route, `/static/css/index.css`, and `/static/js/sunblock.js` all return 200, the page HTML references the new `<link>`/`<script src>` tags, both extracted files contain sane content (`header h1` CSS rule present, `Alpine.data('sunblock'` present in the JS), `/api/data` still works end-to-end, and the simplified CSP header renders correctly with no nonce.
+
+### Part 3 — Follow-up security review of the now-public static assets
+
+The operator asked two follow-up questions, both answered by direct inspection rather than assumption:
+
+1. **"Is `/static/*` exploitable via URLs?"** — Read Starlette 0.49's `StaticFiles.lookup_path` source directly: it resolves both the requested path and the base directory with `os.path.realpath()` and rejects anything whose `os.path.commonpath` doesn't match the base directory — blocking `../` traversal, encoded variants, *and* malicious symlinks (since `realpath` resolves symlink targets before the containment check). Confirmed `directory="public"` resolves correctly to `<project_root>/public` because `scripts/deploy.sh` sets `WorkingDirectory=$PROJECT_DIR` in the systemd unit. Confirmed no symlinks exist under `public/`, the directory contains only intentionally-public frontend assets (no `.env`/`.db`/secrets), Starlette never implements directory listing, and `X-Content-Type-Options: nosniff` is already set globally. Conclusion: not exploitable.
+2. **"Do the extracted CSS/JS contain sensitive info or hints about where other secrets live?"** — Grepped both files for secrets/paths/credentials/internal hostnames. Found none — matches for "secret"/"password"/"token" are all client-side variable/form-field names (`twofaSetup: { secret, otpauth_uri }`, `pwForm`, `tokenForm`), not real values. The JS does reveal the full `/api/*` endpoint list, but that's **not new exposure** — it was always inline in the rendered page (visible via View Source / devtools) and always will be for any browser-based SPA; the real protection is server-side auth, not URL secrecy. Notably absent: `ADMIN_PATH`, `SECRET_KEY`, `TOTP_SECRET`, password hashes, DB paths — none of those are ever templated into any page or script.
+
+---
+
 ## Summary of All API Endpoints (current)
 
 | Method | Path | Auth | Description |
@@ -383,9 +425,14 @@ Triggered by the operator's plan — a publicly-reachable admin panel that contr
 | `db.py` | 3, 5, 7, 8, 9, 10 | Module introduced; settings store (now incl. secret_key/totp_secret/totp_enabled + auto-generate-and-persist SECRET_KEY), query_history, query_visualize, admin_log, _validate_data_directory, api_tokens store, backup_codes store (generate/verify-and-consume/count/clear) |
 | `hardware.py` | 3 | Extracted from sunblock.py |
 | `simulator.py` | 2, 3 | Created; extracted to own module |
-| `sunblock.py` | 2–10 | Refactored; all routes, security hardening, rate limits, CSP, audit log calls; API token routes; two-step login + full /api/2fa/* route set; removed obsolete SECRET_KEY startup warning |
-| `templates/index.html` | 4–10 | Settings, History, Visualize tabs; extra charts; auth-gating; CSP nonce; Plotly; API Tokens panel; Two-Factor Authentication panel + two-step login modal; vendored QR rendering |
+| `sunblock.py` | 2–11 | Refactored; all routes, security hardening, rate limits, CSP, audit log calls; API token routes; two-step login + full /api/2fa/* route set; removed obsolete SECRET_KEY startup warning; routes now render public.html/admin.html; CSP nonce + `import secrets` removed (Session 11) |
+| `templates/index.html` | 4–10 | **Deleted in Session 11** — split into `_base.html`/`admin.html`/`public.html` + extracted `public/css/index.css` + `public/js/sunblock.js`. History (4–10): Settings, History, Visualize tabs; extra charts; auth-gating; CSP nonce; Plotly; API Tokens panel; Two-Factor Authentication panel + two-step login modal; vendored QR rendering |
+| `templates/_base.html` | 11 | Created: shared page shell extracted from index.html; declares 4 empty Jinja2 blocks (referrer_meta, extra_tabs, live_admin_extras, admin_panels); 110 lines (was 1062 right after the split, before CSS/JS extraction) |
+| `templates/admin.html` | 11 | Created: `{% extends "_base.html" %}`, fills all 4 blocks with the full admin UI; rendered only at /<ADMIN_PATH> |
+| `templates/public.html` | 11 | Created: `{% extends "_base.html" %}`, overrides nothing — admin blocks stay empty |
 | `templates/404.html` | 8 | Created: custom 404 page |
+| `public/css/index.css` | 11 | Created: extracted page styles (verbatim from the old inline `<style>` block, 168 lines) |
+| `public/js/sunblock.js` | 11 | Created: extracted Alpine.data('sunblock', ...) component + supporting constants (verbatim from the old inline `<script>`, 781 lines) |
 | `sample.env` | 2, 8, 10 | SIM_MODE, ADMIN_PATH, cleanup; SECRET_KEY now documented as optional/auto-generated |
 | `scripts/deploy.sh` | early, 8 | systemd deployment; ADMIN_PATH generation; openpyxl |
 | `scripts/vendor.sh` | 8, 10 | uPlot → Plotly basic bundle; added qrcodejs for client-side 2FA QR rendering |

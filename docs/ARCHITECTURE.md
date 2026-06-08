@@ -103,11 +103,17 @@ db.py            ← SQLite helpers: logging, audit log, solar data r/w, setting
 hardware.py      ← Epever controller: parse_data, read_controller_*, apply_*, power profiles
 simulator.py     ← _SimState class: synthetic data generation from real baselines
 templates/
-  index.html     ← Single Jinja2 template; renders as public live view (Live tab only) or full
-                    admin panel (all tabs) depending on the admin_mode context variable
+  _base.html     ← Shared page shell (head, header, Live tab, Alpine bootstrap,
+                    script tags); declares 4 empty Jinja2 blocks for admin-only content
+  admin.html     ← extends _base.html; fills the blocks with the full admin UI
+                    (all tabs, both modals); rendered only at /<ADMIN_PATH>
+  public.html    ← extends _base.html; overrides nothing — admin blocks stay empty,
+                    so the public response structurally cannot contain admin markup
   404.html       ← Custom 404 page
 public/
-  vendor/        ← Vendored JS (Socket.IO, Alpine.js, Plotly basic bundle ~1MB)
+  css/           ← index.css — extracted page styles (formerly an inline <style> block)
+  js/            ← sunblock.js — extracted Alpine component (formerly an inline <script>)
+  vendor/        ← Vendored JS (Socket.IO, Alpine.js, Plotly basic bundle ~1MB, qrcodejs)
 scripts/
   deploy.sh      ← Ubuntu deployment automation
   gen_password_hash.py
@@ -361,9 +367,13 @@ Two-factor authentication (Settings → Two-Factor Authentication) adds a TOTP-b
 
 The admin login page is only reachable at `/<ADMIN_PATH>` where `ADMIN_PATH` is a random slug set in `.env`. The slug is never written to any log file. The admin page injects `<meta name="referrer" content="no-referrer">` to prevent slug leakage via the HTTP Referer header.
 
-### CSP per-request nonce
+### Content Security Policy
 
-`_page_response()` generates a fresh `secrets.token_urlsafe(16)` nonce on every request. The nonce appears in both the `Content-Security-Policy` header (`script-src 'nonce-<n>'`) and the inline Alpine bootstrap `<script nonce="...">` tag. Injected scripts that lack the nonce are blocked by the browser.
+`_page_response()` attaches a static `Content-Security-Policy` header to every HTML response: `default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'`.
+
+Earlier versions of this app served one inline `<script>` (the Alpine component) and used a per-request `secrets.token_urlsafe(16)` nonce — minted fresh on every render and stamped onto both the CSP header (`script-src 'nonce-<n>'`) and the `<script nonce="...">` tag — so that only that specific script could execute and injected scripts (lacking the nonce) were blocked.
+
+That inline script has since been extracted to `public/js/sunblock.js` (a same-origin static file — see §9 "Frontend Architecture"), which means **there is no inline `<script>` left in any template**. `script-src 'self'` alone now covers loading every script the app uses (vendored libs + `sunblock.js`), so the nonce machinery was removed entirely as dead complexity — fewer moving parts for the same (arguably stronger — zero exceptions for inline content) protection. `'unsafe-eval'` remains required because Alpine.js evaluates `x-data`/`x-on` expressions via `new Function()`, and `style-src 'unsafe-inline'` remains required because Alpine's `:style` bindings set inline `style=""` attributes on elements.
 
 ### Rate limiting
 
@@ -425,18 +435,37 @@ Real solar data has strong autocorrelation — the next reading is always close 
 
 ## 9. Frontend Architecture
 
-The UI is a **single-page application** rendered by a single Jinja2 template (`index.html`), driven by Alpine.js with zero build tooling.
+The UI is a **single-page application** assembled from a small set of Jinja2 templates and two extracted static assets, driven by Alpine.js with zero build tooling.
+
+### Template structure — inheritance, not duplication
+
+Originally the entire frontend (CSS + HTML + JS, ~1850 lines) lived in one `templates/index.html`, with `{% if admin_mode %}` guards switching admin content on/off. That file was split into:
+
+- **`templates/_base.html`** — the shared shell: `<head>` (incl. the CSS `<link>`), header, the Live tab/panel, the Alpine `x-data` bootstrap div, and the closing `<script>` tags. It declares four empty Jinja2 blocks where admin-only markup used to be inlined: `referrer_meta`, `extra_tabs`, `live_admin_extras`, `admin_panels`.
+- **`templates/admin.html`** — `{% extends "_base.html" %}`, overriding all four blocks with the full admin UI (Parameters/Energy/Settings/History/Visualize panels, the login modal, the edit-params modal, the logout toolbar, etc). Rendered **only** by the route registered at the secret `ADMIN_PATH` slug.
+- **`templates/public.html`** — `{% extends "_base.html" %}`, overriding nothing. Because the blocks default to empty, the rendered output for `GET /` **structurally cannot contain** any admin markup — it's not hidden with CSS or `x-show`, it's simply never generated or transmitted.
+
+This was chosen over copy-pasting two near-identical files specifically to avoid maintaining duplicate copies of the shared CSS/header/Live-tab/Alpine-bootstrap — changes to shared chrome happen in exactly one place (`_base.html`) and automatically apply to both page variants.
 
 ### Why Alpine.js instead of React/Vue?
 
 - No Node.js build pipeline on the deployment target
 - The entire app is served as static files from a Python process
 - Alpine's `x-data` / `x-model` pattern is sufficient for the UI complexity
-- Single file: the complete frontend is one `index.html` — easy to audit and deploy
+- No bundler: the frontend is a handful of plain HTML/CSS/JS files — easy to audit and deploy
+
+### Extracted static assets
+
+The page-wide `<style>` block and the `Alpine.data('sunblock', ...)` component (the two largest chunks of the old monolith) now live as standalone static files served via the existing `/static` mount (`StaticFiles(directory="public")`):
+
+- **`public/css/index.css`** — all page styles, referenced via `<link rel="stylesheet" href="/static/css/index.css" />`
+- **`public/js/sunblock.js`** — the entire Alpine component plus its supporting constants (`CHART_VARS`, `PLOTLY_LAYOUT`, etc.), referenced via `<script src="/static/js/sunblock.js"></script>`
+
+Both were lifted out **verbatim** — neither contains any Jinja2 `{{ }}`/`{% %}` syntax. This matters for `sunblock.js` in particular: the component still receives all server-rendered values (auth state, sim mode, env defaults, `viz_fields`, etc.) but purely as **constructor arguments** passed in from `_base.html`'s `x-data='sunblock(...)'` call — never by templating values directly into the JS source. That's what makes it possible to serve the file as a plain, cacheable, same-origin static asset rather than re-rendering it through Jinja2 on every request. (It also happens to be what made the CSP nonce removal possible — see §7.)
 
 ### Server-side bootstrap
 
-Six values are baked into the page at render time via Jinja2:
+Six values are baked into the page at render time via Jinja2, in `_base.html`:
 
 ```html
 <div x-data='sunblock(
@@ -451,18 +480,18 @@ Six values are baked into the page at render time via Jinja2:
 
 **Important**: the `x-data` attribute uses single quotes so that the JSON double quotes from `tojson` are safe inside it. Double-quoting `x-data` would break on the first `"` in the JSON output.
 
-`admin_mode` is `True` when the page is served from the secret `ADMIN_PATH` route. It controls both Jinja2 server-side rendering (which HTML blocks are included) and Alpine.js behaviour (auto-open login modal for unauthenticated visitors).
+`admin_mode` is `True` when the page is served from the secret `ADMIN_PATH` route (and, correspondingly, `admin.html` is the template in use rather than `public.html`). It still drives Alpine.js behaviour (e.g. auto-open login modal for unauthenticated visitors) — the Jinja2-side gating it used to also control is now expressed structurally via which template extends `_base.html`.
 
 `viz_fields` is the `VIZ_FIELD_META` dict from `db.py` — it populates the variable-picker checkboxes in the Visualize tab without an extra API round-trip.
 
 ### Access tiers
 
-There are two distinct page variants rendered from the same `index.html` template, controlled by the server-side `admin_mode` Jinja2 variable:
+There are two distinct page variants, now backed by **two distinct templates** (rather than one template branching on `admin_mode`):
 
-**Public live view (`GET /`)** — `admin_mode=False`
-Only the Live tab is present in the rendered HTML. Admin panels (Parameters, Energy, Settings, History, Visualize), the login/edit-params modals, the logout toolbar, the power-profile switcher, and the data-directory warning are excluded from the HTML entirely by Jinja2 `{% if admin_mode %}` guards. The browser receives a page that contains only the live data cards, rolling charts, and Socket.IO connection logic.
+**Public live view (`GET /`)** — renders `public.html` (`admin_mode=False`)
+Only the Live tab is present in the rendered HTML. Admin panels (Parameters, Energy, Settings, History, Visualize), the login/edit-params modals, the logout toolbar, the power-profile switcher, and the data-directory warning are absent from the response — not because of an `{% if %}` guard evaluating false, but because `public.html` simply never overrides the blocks that would contain them. The browser receives a page that contains only the live data cards, rolling charts, and Socket.IO connection logic.
 
-**Admin panel (`GET /<ADMIN_PATH>`)** — `admin_mode=True`
+**Admin panel (`GET /<ADMIN_PATH>`)** — renders `admin.html` (`admin_mode=True`)
 The full page is rendered: all six tabs, both modals, all admin controls. Admin tabs (`Parameters`, `Energy`, `Settings`, `History`, `Visualize`) are additionally wrapped in Alpine `<template x-if="authed">` so they appear in the DOM only after a successful login. The `switchTab()` method provides a UX guard; the real data protection is server-side (401 on all data endpoints).
 
 ### Real-time updates

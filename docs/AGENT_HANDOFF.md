@@ -31,9 +31,20 @@ hardware.py     ← Epever Modbus: parse_data(), read_controller_*(), apply_para
 simulator.py    ← _SimState: synthetic data from real baselines
 sunblock.py     ← ASGI app, lifespan, ALL routes, Socket.IO events
 templates/
-  index.html    ← Entire frontend: Alpine.js SPA, 6 tabs, all CSS, all JS
+  _base.html    ← Shared page shell (head/<link> CSS, header, Live tab, Alpine
+                   bootstrap, <script> tags). Declares 4 empty Jinja2 blocks:
+                   referrer_meta, extra_tabs, live_admin_extras, admin_panels
+  admin.html    ← extends _base.html; fills all 4 blocks with the full admin UI
+                   (Parameters/Energy/Settings/History/Visualize panels, login
+                   + edit-params modals). Rendered ONLY at /<ADMIN_PATH>
+  public.html   ← extends _base.html; overrides nothing — admin blocks render
+                   empty, so zero admin markup is ever sent for GET /
   404.html      ← Custom 404 page (dark theme, matching the app)
-public/vendor/  ← alpine.min.js, socket.io.min.js, plotly.min.js
+public/
+  css/index.css   ← Extracted CSS (was an inline <style> block)
+  js/sunblock.js  ← Extracted Alpine.data('sunblock', ...) component (was an
+                     inline <script>; now a same-origin static file)
+  vendor/         ← alpine.min.js, socket.io.min.js, plotly.min.js, qrcode.min.js
 scripts/
   deploy.sh     ← Ubuntu/systemd deployment automation
   vendor.sh     ← Downloads and pins all frontend vendor assets
@@ -190,38 +201,48 @@ Rate limits are per IP, enforced by slowapi.
 
 ## Frontend Architecture
 
-Single Jinja2 template `templates/index.html`. No build step.
+Three Jinja2 templates using inheritance — `_base.html` (shared shell) extended by
+`admin.html` and `public.html` (see File Map above for what each contains and why
+the split exists: the admin template is rendered only at the secret `/<ADMIN_PATH>`
+route, and the public template structurally cannot include any admin markup).
+Plus two extracted static assets, `public/css/index.css` and `public/js/sunblock.js`
+(formerly an inline `<style>` and `<script>` in one 1850-line `index.html`).
+Still **no build step** — these are plain files served by FastAPI's `StaticFiles`
+mount at `/static`, no bundler/transpiler involved.
 
 - **Alpine.js** for reactivity (vendored at `public/vendor/alpine.min.js`)
 - **Socket.IO** for live data (vendored at `public/vendor/socket.io.min.js`)
 - **Plotly.js** basic bundle for all charts (vendored at `public/vendor/plotly.min.js`)
+- **qrcodejs** for client-side 2FA QR rendering (vendored at `public/vendor/qrcode.min.js`)
 
-The Alpine component is bootstrapped with server-side values:
+The Alpine component (now in `public/js/sunblock.js`) is bootstrapped with
+server-side values passed as plain function arguments from `_base.html`:
 
 ```html
 <div x-data='sunblock(
   {{ is_authenticated | tojson }},
   {{ sim_mode         | tojson }},
   {{ env_defaults     | tojson }},
+  {{ data_directory   | tojson }},
   {{ admin_mode       | tojson }},
   {{ viz_fields       | tojson }}
 )'>
 ```
 
-**Critical:** The `x-data` attribute uses single quotes. JSON from `tojson` contains double quotes — if the attribute used double quotes, the JSON would break HTML attribute parsing. Do not change the quoting.
+**Critical:** The `x-data` attribute uses single quotes. JSON from `tojson` contains double quotes — if the attribute used double quotes, the JSON would break HTML attribute parsing. Do not change the quoting. Note that `sunblock.js` itself contains **no Jinja interpolation** — it was extracted verbatim and is pure JS; all server-rendered values flow in solely through these `x-data(...)` constructor arguments. Keep it that way — adding `{{ }}` to that file would require it to go back through Jinja2 (defeating the point of serving it as a cacheable static asset).
 
-**Access tiers:** Unauthenticated visitors see only the Live tab (data cards + charts). All other tabs are `<template x-if="authed">` — not rendered until login. The `switchTab()` method also enforces this client-side as a UX guard.
-
-**CSP nonce:** Every HTML response gets a unique nonce in both the `Content-Security-Policy` header and the inline `<script nonce="...">` tag. This blocks injected scripts while allowing the Alpine bootstrap.
+**Access tiers:** Unauthenticated visitors get `public.html`, which renders only the Live tab (data cards + charts) — the admin tabs/panels/modals don't exist in that response at all (not just hidden). The admin template additionally wraps its tabs in `<template x-if="authed">` so they appear in the DOM only after login; `switchTab()` enforces this client-side too as a UX guard. Real protection is server-side (401 on data endpoints).
 
 Tab panels use `x-show` (not `x-if`) — DOM is retained between switches so charts don't need re-initialisation.
+
+**CSP (no nonce anymore):** Since the JS extraction removed the last inline `<script>` from every template, `_page_response()` no longer mints a per-request nonce — `script-src 'self' 'unsafe-eval'` is sufficient (everything loads from same-origin static files). See "Content Security Policy" in `docs/SECURITY.md` §7 for the current header value and rationale.
 
 ---
 
 ## Security Architecture (Brief)
 
 - Admin login path is a random slug (`ADMIN_PATH` in `.env`) — never in logs, never in Referer
-- Per-request CSP nonce — blocks injected scripts
+- Strict CSP (`script-src 'self' 'unsafe-eval'`, `default-src 'self'`, `frame-ancestors 'none'`, ...) — every script loads from a same-origin file (vendored libs + `public/js/sunblock.js`); there is no inline `<script>` left in any template, so injected inline scripts simply have no `'unsafe-inline'`/nonce to satisfy and won't execute
 - Rate limiting on login (5/min) and data endpoints (20–60/min)
 - `data_directory` validated with `_validate_data_directory()` — resolves symlinks, rejects system paths
 - All data endpoints (history, visualize, downloads) require auth
@@ -291,7 +312,9 @@ Falls back to stderr if `DATA_DIRECTORY` is not yet set.
 | `config.py` | Adding imports here can change module-load order and break the `ENV_DEFAULTS` snapshot timing |
 | `db.py` — `load_settings()` | Boolean parsing uses `v == "true"` (lowercase). Changing serialisation in `save_setting()` must match. |
 | `db.py` — `_validate_data_directory()` | Blocklist must cover all platform-specific system paths. Symlink resolution via `os.path.realpath()` is load-bearing. |
-| `templates/index.html` — `x-data` quoting | Single quotes on `x-data` are load-bearing. See above. |
+| `templates/_base.html` — `x-data` quoting | Single quotes on `x-data` are load-bearing. See above. |
+| `templates/_base.html` — block names | `admin.html` overrides blocks by name (`referrer_meta`, `extra_tabs`, `live_admin_extras`, `admin_panels`). Renaming/removing a block in `_base.html` silently breaks the admin template (Jinja2 doesn't error on an override of a non-existent block — it's just ignored, and the content disappears). |
+| `public/js/sunblock.js` | Must stay free of Jinja2 `{{ }}` interpolation — see "Frontend Architecture" above. |
 | `.env` | Contains `SECRET_KEY`, `ADMIN_PASSWORD_HASH`, and `ADMIN_PATH`. Never commit. |
 
 ---
