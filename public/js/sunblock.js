@@ -1,3 +1,4 @@
+  const VC_KEYS = [
     'over_voltage_disconnect_voltage','charging_limit_voltage','over_voltage_reconnect_voltage',
     'equalize_charging_voltage','boost_charging_voltage','float_charging_voltage',
     'boost_reconnect_charging_voltage','low_voltage_reconnect_voltage','under_voltage_recover_voltage',
