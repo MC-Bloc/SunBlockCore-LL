@@ -1,24 +1,44 @@
 """Solar charge controller I/O: live data polling, power profiles, parameter r/w."""
 
 import subprocess
+import time
 from datetime import datetime
 
 import config
+
+# ── Power-profile cache ───────────────────────────────────────────────────────
+# check_power_profile() shells out to `sudo powerprofilesctl get`, which is
+# expensive (~100–500 ms per call due to sudo + D-Bus overhead).  Power profiles
+# change at most a few times a day, so caching the result for 30 s reduces the
+# per-poll cost to a single dict lookup on 29 out of every 30 ticks.
+_PROFILE_CACHE_TTL = 30.0          # seconds between real subprocess calls
+_cached_profile:     str   = ""
+_cached_profile_at:  float = 0.0
 
 
 # ── Power profiles ────────────────────────────────────────────────────────────
 
 def check_power_profile() -> str:
+    """Read current power profile, with a 30-second cache to avoid per-poll subprocess cost."""
+    global _cached_profile, _cached_profile_at
+    now = time.monotonic()
+    if _cached_profile and (now - _cached_profile_at) < _PROFILE_CACHE_TTL:
+        return _cached_profile
     result = subprocess.run(["sudo", "powerprofilesctl", "get"], capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"powerprofilesctl get failed with code {result.returncode}")
-    return result.stdout.strip()
+    _cached_profile = result.stdout.strip()
+    _cached_profile_at = now
+    return _cached_profile
 
 
 def set_power_profile(profile: str) -> str:
+    global _cached_profile, _cached_profile_at
     result = subprocess.run(["sudo", "powerprofilesctl", "set", profile])
     if result.returncode != 0:
         raise RuntimeError(f"powerprofilesctl set {profile} failed with code {result.returncode}")
+    # Force a fresh read so the cache reflects the change immediately.
+    _cached_profile_at = 0.0
     return check_power_profile()
 
 
