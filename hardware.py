@@ -26,7 +26,20 @@ def set_power_profile(profile: str) -> str:
 
 def parse_data() -> dict:
     ctrl = config.CONTROLLER
-    result = subprocess.run([config.POWER_DRAW_SCRIPT], capture_output=True)
+
+    # CPUPowerDraw is optional — only measured when POWER_DRAW_SCRIPT_ADDR is set.
+    # If the script is absent or fails, fall back to 0 so the polling loop keeps
+    # running instead of crashing on a FileNotFoundError / TypeError.
+    cpu_power: float = 0.0
+    if config.POWER_DRAW_SCRIPT:
+        try:
+            result = subprocess.run(
+                [config.POWER_DRAW_SCRIPT], capture_output=True, timeout=5
+            )
+            cpu_power = float(result.stdout.decode().replace("W", "").strip())
+        except Exception:
+            cpu_power = 0.0
+
     return {
         "Timestamp":          datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "PVVoltage":          ctrl.get_solar_voltage(),
@@ -38,7 +51,7 @@ def parse_data() -> dict:
         "BattOverallCurrent": ctrl.get_battery_current(),
         "BattPercentage":     ctrl.get_battery_state_of_charge(),
         "LoadPower":          ctrl.get_load_power(),
-        "CPUPowerDraw":       result.stdout.decode().replace("W", "").strip(),
+        "CPUPowerDraw":       cpu_power,
         "PowerProfile":       check_power_profile(),
     }
 
