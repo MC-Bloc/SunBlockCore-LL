@@ -87,6 +87,8 @@ async def polling_loop():
     loop = asyncio.get_running_loop()
 
     while config.POLLING_ACTIVE:
+        tick_start = loop.time()
+
         poll_fn = simulate_data if config.SIM_MODE else parse_data
         try:
             new_data = await loop.run_in_executor(None, poll_fn)
@@ -106,7 +108,10 @@ async def polling_loop():
         except Exception as e:
             await sunblock_log("Socket emit error (continuing): " + str(e))
 
-        await asyncio.sleep(config.READ_INTERVAL)
+        # Sleep only for the remainder of the interval so the total cycle time
+        # stays at READ_INTERVAL regardless of how long the poll and DB write took.
+        elapsed = loop.time() - tick_start
+        await asyncio.sleep(max(0.0, config.READ_INTERVAL - elapsed))
 
     await sunblock_log("Exiting polling loop.")
 
