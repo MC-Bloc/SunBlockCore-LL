@@ -77,18 +77,24 @@ An asyncio `Task` runs for the lifetime of the server, managed by the `lifespan`
 lifespan start
   └─ create_task(polling_loop())
        └─ while POLLING_ACTIVE:
+            tick_start = loop.time()
             poll_fn = simulate_data | parse_data   ← selected each tick
-            new_data = executor.run(poll_fn)
+            new_data = executor.run(poll_fn)       ← on error: log + break (stops the loop)
             SOLAR_DATA = new_data                  ← atomic ref swap
-            write_db()                             ← if DATA_MAN
-            sio.emit("solar_data", …)
-            sleep(READ_INTERVAL)
+            write_db()                             ← if DATA_MAN; on error: log + continue
+            sio.emit("solar_data", …)              ← on error: log + continue
+            elapsed = loop.time() - tick_start
+            sleep(max(0, READ_INTERVAL - elapsed)) ← interval-correcting, see below
 lifespan end
   └─ POLLING_ACTIVE = False
   └─ POLLING_TASK.cancel()
 ```
 
 The poll function is **re-selected on every iteration** so that toggling `SIM_MODE` at runtime takes effect immediately on the next tick without restarting the server.
+
+**Error handling is intentionally asymmetric.** A failure in `poll_fn` (the Modbus read itself, or `simulate_data`) is fatal to the loop — it is logged via `sunblock_log` and the loop `break`s, because `SOLAR_DATA` would otherwise go stale while clients keep being told the last-known reading is current. A failure in `write_db()` or `sio.emit()` is logged but does **not** stop polling — a transient SQLite or socket error shouldn't take down live data delivery for the rest of the session. (See Decision 9 in §10 for a real failure that hit the fatal path.)
+
+**Interval-correcting sleep.** `tick_start = loop.time()` is captured at the top of each iteration, and the trailing sleep covers only the *remainder* of `READ_INTERVAL` (`max(0, READ_INTERVAL - elapsed)`), so the cycle time stays at `READ_INTERVAL` regardless of how long the poll, DB write, and emit took. Previously the loop always slept the full `READ_INTERVAL` *after* finishing all per-tick work, so the real cycle time was `work_time + READ_INTERVAL` and broadcasts drifted later every tick (see Decision 7 in §10). If a tick's work alone exceeds `READ_INTERVAL`, the next tick starts immediately with no sleep — the loop never "catches up" by skipping ticks, it just runs back-to-back until it's no longer behind.
 
 ---
 
@@ -156,13 +162,18 @@ polling_loop tick
   │                             └─ apply exponential smoothing (α=0.35)
   │
   └─[SIM_MODE=false]─► parse_data()
-                           └─ EpeverChargeController.get_*()  ← Modbus RTU
-                                └─ check_power_profile()
-                                └─ build SOLAR_DATA dict
+                           ├─ EpeverChargeController.get_*()  ← 9 individual Modbus RTU round trips (FC4)
+                           ├─ CPUPowerDraw                    ← optional, see below
+                           ├─ check_power_profile()           ← cached 30s, see below
+                           └─ build SOLAR_DATA dict
 
 SOLAR_DATA dict  ──► write_db()   (if DATA_MAN=true)
                  └─► sio.emit("solar_data", {…, ConnectedUsers: N})
 ```
+
+**`CPUPowerDraw` is optional.** It is only measured if `config.POWER_DRAW_SCRIPT` (from `POWER_DRAW_SCRIPT_ADDR` in `.env`) is set to a truthy path. The subprocess call is wrapped in `try/except`; if the env var is unset, the script is missing, or it fails for any reason, `CPUPowerDraw` is simply `0.0` (a `float`, matching the `REAL` column in `solardata`). This guard exists because an unguarded `subprocess.run([None], ...)` raises immediately and is fatal inside `polling_loop` (see Decision 9 in §10).
+
+**`check_power_profile()` is cached for 30 seconds.** It shells out to `sudo powerprofilesctl get`, which costs roughly 100–500ms per call (sudo + D-Bus). `hardware.py` caches the result (`_cached_profile`/`_cached_profile_at`/`_PROFILE_CACHE_TTL`) so most ticks pay only a dict lookup. `set_power_profile()` resets the cache timestamp so a profile change made via the admin panel is reflected on the very next read. See Decision 8 in §10.
 
 ### History query cycle
 
@@ -553,6 +564,24 @@ Six tabs share a single Alpine component instance in admin mode; the public view
 **Chosen**: `query_history` opens `sqlite3.connect(DB_NAME)` per call.  
 **Rejected**: Re-using `config.DB_CURSOR` for reads.  
 **Rationale**: `DB_CURSOR` is in the middle of a write transaction when the polling loop calls `write_db()`. Sharing it for concurrent reads risks cursor state corruption and `database is locked` errors. A fresh connection is always in a clean state and SQLite supports concurrent readers safely.
+
+### Decision 7: Interval-correcting sleep in `polling_loop`
+
+**Chosen**: capture `tick_start = loop.time()` at the top of each iteration; sleep only `max(0, READ_INTERVAL - elapsed)` at the end.  
+**Rejected**: a flat `await asyncio.sleep(READ_INTERVAL)` after all per-tick work (the original implementation).  
+**Rationale**: with the flat sleep, the real cycle time was `work_time + READ_INTERVAL`, so `solar_data` broadcasts drifted later every tick. Once `check_power_profile()` was hitting `sudo powerprofilesctl get` on every tick (~100–500ms, see Decision 8), this alone produced the reported "readings 2–3 seconds late" symptom at `READ_INTERVAL=1`. Subtracting the elapsed work time keeps the broadcast cadence at `READ_INTERVAL` as long as per-tick work stays under that budget.
+
+### Decision 8: Cache `check_power_profile()` for 30 seconds
+
+**Chosen**: a module-level cache in `hardware.py` (`_cached_profile`, `_cached_profile_at`, `_PROFILE_CACHE_TTL = 30.0`). `set_power_profile()` resets `_cached_profile_at = 0.0` so a profile change made via the admin panel is reflected on the very next read.  
+**Rejected**: reading the profile on every tick (original behaviour); batching all of `parse_data()`'s Modbus reads into 2 bulk `retriable_read_registers()` calls instead of 9 individual `get_*()` calls.  
+**Rationale**: `sudo powerprofilesctl get` costs ~100–500ms per call (sudo + D-Bus round trip). At `READ_INTERVAL=1`, paying this every tick was the dominant cause of the "2–3 seconds late" symptom. Power profiles change at most a few times a day, so a 30s cache reduces the per-poll cost to a dict lookup on 29 of every 30 ticks with negligible staleness. Batching the Modbus reads was tried and reverted: `BYTEORDER_LITTLE_SWAP`'s exact 32-bit byte layout (needed to manually decode `PVPower`, `BattChargePower`, `LoadPower`, `BattOverallCurrent` from raw register pairs) could not be verified against minimalmodbus's actual `_bytestring_to_long` implementation, and the first attempt produced grossly incorrect readings. The 9 individual `get_*()` calls — each a fast round trip over a direct USB-serial connection — were kept; combined with Decisions 7 and 8 they were sufficient to restore ~1Hz updates. If Modbus round-trip count ever needs reducing again, verify the byte-order math against the installed minimalmodbus version's source first (see `docs/AGENT_HANDOFF.md`).
+
+### Decision 9: Guard `CPUPowerDraw` against a missing/failing `POWER_DRAW_SCRIPT_ADDR`
+
+**Chosen**: `parse_data()` only calls `subprocess.run([config.POWER_DRAW_SCRIPT], ...)` when `config.POWER_DRAW_SCRIPT` is truthy, wrapped in `try/except`, defaulting `CPUPowerDraw` to `0.0` (a `float`; previously a `str`).  
+**Rejected**: requiring `POWER_DRAW_SCRIPT_ADDR` to always be set in `.env`.  
+**Rationale**: when `POWER_DRAW_SCRIPT_ADDR` is blank, `config.POWER_DRAW_SCRIPT` is `None`, and `subprocess.run([None], ...)` raises `TypeError` immediately. Because `parse_data()` runs inside `polling_loop`'s `try/except Exception: ... break` (see §2), this exception was fatal on the very first tick — it silently stopped the polling loop, and therefore **all** `solar_data` socket broadcasts, with no symptom other than "the server runs but isn't broadcasting any events." Making `CPUPowerDraw` optional lets the server run correctly with or without the optional power-draw script, and the `float` type now matches the `REAL` column in `solardata`.
 
 ---
 

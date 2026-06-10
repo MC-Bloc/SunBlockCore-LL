@@ -365,6 +365,45 @@ The operator asked two follow-up questions, both answered by direct inspection r
 
 ---
 
+## Session 12 — Polling Loop Reliability & Latency Fixes
+
+Triggered by the operator running on real hardware (Epever controller on `/dev/ttyACM0`) and reporting that `solar_data` socket events weren't being broadcast at all, then — after that was fixed — that readings were arriving 2–3 seconds late instead of every second.
+
+### Problem 1 — No `solar_data` events at all
+
+**Symptom:** server runs, no errors visible to the operator, but no socket clients ever receive `solar_data`.
+
+**Root cause:** `parse_data()` called `subprocess.run([config.POWER_DRAW_SCRIPT], capture_output=True)` unconditionally. With `POWER_DRAW_SCRIPT_ADDR` blank in `.env`, `config.POWER_DRAW_SCRIPT` is `None`, so `subprocess.run([None], ...)` raised `TypeError` on the very first poll. `polling_loop` wraps `poll_fn` in `try/except Exception: await sunblock_log(...); break` — so this exception logged once and then **silently stopped the entire polling loop**, including all future `sio.emit("solar_data", ...)` calls.
+
+**Fix (`hardware.py`, `parse_data`):**
+- Only call the subprocess if `config.POWER_DRAW_SCRIPT` is truthy.
+- Wrap the call in `try/except Exception`, defaulting `cpu_power = 0.0` on any failure (missing script, non-zero exit, unparsable output).
+- `CPUPowerDraw` is now always a `float` (was previously `result.stdout.decode().replace("W", "").strip()` — a `str`), matching the `REAL` column in `solardata`.
+
+### Problem 2 — Readings 2–3 seconds late at `READ_INTERVAL=1`
+
+After Problem 1 was fixed, broadcasts resumed but lagged real time by 2–3 seconds per tick, growing/staying roughly constant rather than catching up.
+
+**Root cause A — `check_power_profile()` on every tick.** It runs `sudo powerprofilesctl get`, which costs ~100–500ms (sudo + D-Bus round trip). At `READ_INTERVAL=1` this alone could account for the bulk of the reported lag.
+
+**Fix (`hardware.py`):** added a 30-second cache (`_PROFILE_CACHE_TTL`, `_cached_profile`, `_cached_profile_at`). `check_power_profile()` returns the cached value if it's less than 30s old; otherwise it shells out and refreshes the cache. `set_power_profile()` resets `_cached_profile_at = 0.0` so a profile change made via the admin panel is reflected on the very next read rather than waiting up to 30s.
+
+**Operator feedback after this fix:** "faster than before but still not per second" — confirming this was a real contributor but not the whole story.
+
+**Root cause B — non-interval-correcting sleep.** `polling_loop` ended each iteration with `await asyncio.sleep(config.READ_INTERVAL)`, run *after* the poll, DB write, and socket emit. Real cycle time was therefore `work_time + READ_INTERVAL`, not `READ_INTERVAL` — every tick drifted later by `work_time`.
+
+**Fix (`sunblock.py`, `polling_loop`):** capture `tick_start = loop.time()` at the top of each iteration; at the end, compute `elapsed = loop.time() - tick_start` and sleep only `max(0.0, config.READ_INTERVAL - elapsed)`. Cycle time now stays at `READ_INTERVAL` as long as per-tick work fits within that budget.
+
+### Attempted and reverted — batching `parse_data()`'s Modbus reads
+
+As a further latency reduction, `parse_data()`'s 9 individual `ctrl.get_*()` calls (each a separate Modbus RTU round trip, FC4) were replaced with 2 bulk `ctrl.retriable_read_registers()` calls (`0x3100`×27 registers and `0x331A`×3 registers), with manual decode helpers (`_swap`, `_long32`, `_s16`) reproducing minimalmodbus's `BYTEORDER_LITTLE_SWAP` 32-bit decoding for `PVPower`, `BattChargePower`, `LoadPower`, and `BattOverallCurrent`.
+
+**Result:** "data doesn't read" — the manually-derived `BYTEORDER_LITTLE_SWAP` formula (`(_swap(hi) << 16) | _swap(lo)`) was wrong (the correct register-pair ordering could not be confirmed without minimalmodbus's actual `_bytestring_to_long` source), producing grossly incorrect values for the four 32-bit fields.
+
+**Resolution:** reverted entirely (`git revert`) back to the 9 individual `get_*()` calls, which are known-correct (validated against `epevermodbus --portname /dev/ttyACM0 --slaveaddress 1` CLI output earlier in this session). Combined with the Decision-7/8 fixes above, this was sufficient to restore ~1Hz broadcast cadence — each `get_*()` call is a fast round trip over a direct USB-serial connection, so 9 sequential calls were not the dominant cost once the per-tick sudo subprocess and the extra full-interval sleep were removed. If round-trip count ever needs reducing again, the byte-order math must be validated against the installed minimalmodbus version's source before trusting decoded values (see `docs/AGENT_HANDOFF.md` → "Polling Loop & `parse_data()` Gotchas").
+
+---
+
 ## Summary of All API Endpoints (current)
 
 | Method | Path | Auth | Description |
@@ -423,9 +462,9 @@ The operator asked two follow-up questions, both answered by direct inspection r
 | `config.py` | 3, 5, 8, 10 | Module introduced; SETTINGS_DB_NAME, ENV_DEFAULTS, ADMIN_PATH, ADMIN_AUDIT_FILE; SECRET_KEY default removed (now ""), TOTP_SECRET/TOTP_ENABLED runtime state |
 | `auth.py` | 3, 4, 5, 9, 10 | Module introduced; SettingsUpdate, PasswordChange, TokenCreateRequest, TwoFACodeRequest, TwoFADisableRequest models; verify_session_or_token dependency; pending-2FA JWT helpers (create/verify), verify_totp_code; "purpose" claim rejected by all session-verifying functions |
 | `db.py` | 3, 5, 7, 8, 9, 10 | Module introduced; settings store (now incl. secret_key/totp_secret/totp_enabled + auto-generate-and-persist SECRET_KEY), query_history, query_visualize, admin_log, _validate_data_directory, api_tokens store, backup_codes store (generate/verify-and-consume/count/clear) |
-| `hardware.py` | 3 | Extracted from sunblock.py |
+| `hardware.py` | 3, 12 | Extracted from sunblock.py; CPUPowerDraw made optional/guarded (float, defaults to 0.0); 30s cache for check_power_profile()/set_power_profile() |
 | `simulator.py` | 2, 3 | Created; extracted to own module |
-| `sunblock.py` | 2–11 | Refactored; all routes, security hardening, rate limits, CSP, audit log calls; API token routes; two-step login + full /api/2fa/* route set; removed obsolete SECRET_KEY startup warning; routes now render public.html/admin.html; CSP nonce + `import secrets` removed (Session 11) |
+| `sunblock.py` | 2–12 | Refactored; all routes, security hardening, rate limits, CSP, audit log calls; API token routes; two-step login + full /api/2fa/* route set; removed obsolete SECRET_KEY startup warning; routes now render public.html/admin.html; CSP nonce + `import secrets` removed (Session 11); polling_loop sleep made interval-correcting via loop.time() (Session 12) |
 | `templates/index.html` | 4–10 | **Deleted in Session 11** — split into `_base.html`/`admin.html`/`public.html` + extracted `public/css/index.css` + `public/js/sunblock.js`. History (4–10): Settings, History, Visualize tabs; extra charts; auth-gating; CSP nonce; Plotly; API Tokens panel; Two-Factor Authentication panel + two-step login modal; vendored QR rendering |
 | `templates/_base.html` | 11 | Created: shared page shell extracted from index.html; declares 4 empty Jinja2 blocks (referrer_meta, extra_tabs, live_admin_extras, admin_panels); 110 lines (was 1062 right after the split, before CSS/JS extraction) |
 | `templates/admin.html` | 11 | Created: `{% extends "_base.html" %}`, fills all 4 blocks with the full admin UI; rendered only at /<ADMIN_PATH> |

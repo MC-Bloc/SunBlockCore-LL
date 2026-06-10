@@ -282,6 +282,22 @@ Falls back to stderr if `DATA_DIRECTORY` is not yet set.
 
 ---
 
+## Polling Loop & `parse_data()` Gotchas
+
+These exist because of bugs that have already happened once — read before touching `polling_loop` or `hardware.py`.
+
+- **`polling_loop`'s sleep is interval-correcting.** It captures `tick_start = loop.time()`, does all per-tick work, then sleeps only `max(0, READ_INTERVAL - elapsed)`. Don't replace this with a flat `asyncio.sleep(READ_INTERVAL)` — that makes the real cycle time `work_time + READ_INTERVAL` and broadcasts drift later every tick.
+
+- **Error handling in `polling_loop` is asymmetric on purpose.** An exception from `poll_fn` (i.e. `parse_data`/`simulate_data`) is logged and **breaks the loop** — all `solar_data` broadcasts stop silently from that point on. Exceptions from `write_db()` or `sio.emit()` are logged but the loop **continues**. Any code that runs inside `poll_fn` must therefore either succeed or fail in a way that's actually fatal — see the `CPUPowerDraw` guard below for what happens when it doesn't.
+
+- **`CPUPowerDraw` is optional and must stay guarded.** `parse_data()` only shells out to `config.POWER_DRAW_SCRIPT` (from `POWER_DRAW_SCRIPT_ADDR`) if that value is truthy, and wraps the call in `try/except`, defaulting to `0.0` (`float`, matches the `REAL` column). An earlier unguarded `subprocess.run([config.POWER_DRAW_SCRIPT], ...)` with `POWER_DRAW_SCRIPT_ADDR` blank threw `TypeError` on the first poll tick and silently killed the entire polling loop — symptom: "the server runs but isn't broadcasting any events on the socket," with no other error visible. Don't remove the `if config.POWER_DRAW_SCRIPT:` guard or the `try/except`.
+
+- **`check_power_profile()` is cached for 30s** (`_PROFILE_CACHE_TTL`/`_cached_profile`/`_cached_profile_at` module globals in `hardware.py`). It exists because `sudo powerprofilesctl get` costs ~100–500ms (sudo + D-Bus), which at `READ_INTERVAL=1` was the dominant source of multi-second broadcast latency. `set_power_profile()` resets `_cached_profile_at = 0.0` to force a fresh read after a profile change — preserve that if you touch this code.
+
+- **Don't batch `parse_data()`'s 9 `ctrl.get_*()` Modbus calls into bulk `retriable_read_registers()` reads without verifying byte order first.** This was tried (to cut round trips for latency) and reverted — `BYTEORDER_LITTLE_SWAP`'s exact 32-bit byte arrangement for `PVPower`/`BattChargePower`/`LoadPower`/`BattOverallCurrent` isn't derivable from the public `epevermodbus` driver alone, and a guessed formula produced grossly wrong readings (correctness regression, not a crash). If you revisit this: read minimalmodbus's actual `_bytestring_to_long`/`BYTEORDER_LITTLE_SWAP` source from the installed package (`.venv/lib/python3.9/site-packages/minimalmodbus.py`) and validate decoded values against `epevermodbus --portname /dev/ttyACM0 --slaveaddress 1` CLI output before trusting them. See `docs/DEVELOPMENT_HISTORY.md` Session 12.
+
+---
+
 ## Known Issues to Fix (Priority Order)
 
 ### Medium
