@@ -23,6 +23,9 @@
       <div class="tab" :class="tab === 'visualize'  && 'active'" @click="switchTab('visualize')">Visualize</div>
     </template>
     <template x-if="authed">
+      <div class="tab" :class="tab === 'logs'       && 'active'" @click="switchTab('logs')">Logs</div>
+    </template>
+    <template x-if="authed">
       <div class="tab" :class="tab === 'settings'   && 'active'" @click="switchTab('settings')">Settings</div>
     </template>
 {% endblock %}
@@ -724,6 +727,77 @@
       </div>
     </template>
     <template x-if="vizLoading && !vizHasData">
+      <div class="card hist-placeholder"><div>Loading…</div></div>
+    </template>
+
+  </div>
+
+  <!-- ══ LOGS ══ -->
+  <div class="panel" x-show="tab === 'logs'" style="max-width:1200px">
+
+    <!-- Toolbar -->
+    <div class="hist-toolbar">
+      <select class="hist-select" x-model.number="logsFilter.lines" @change="loadLogs()">
+        <option value="100">Last 100 lines</option>
+        <option value="200">Last 200 lines</option>
+        <option value="500">Last 500 lines</option>
+        <option value="1000">Last 1000 lines</option>
+        <option value="2000">Last 2000 lines</option>
+      </select>
+      <button class="btn btn-action" @click="loadLogs()" :disabled="logsLoading">
+        <span x-text="logsLoading ? 'Loading…' : '↻ Refresh'"></span>
+      </button>
+      <label class="toggle" title="Auto-refresh every 5 seconds" style="margin-left:4px">
+        <input type="checkbox" x-model="logsAutoRefresh" @change="toggleLogsAutoRefresh()" />
+        <span class="toggle-slider"></span>
+      </label>
+      <span style="font-size:0.82rem;color:var(--muted)">Auto-refresh</span>
+
+      <span style="flex:1"></span>
+
+      <span x-show="logs && logs.available" style="font-size:0.8rem;color:var(--muted)">
+        Showing last <strong x-text="logs ? logs.lines.length : 0"></strong> of
+        <strong x-text="logs ? logs.total_lines.toLocaleString() : 0"></strong> lines
+      </span>
+
+      <template x-if="authed && logs && logs.available">
+        <a href="/api/logs/download"
+           download="SunBlockCoreLogs.txt"
+           class="btn btn-action"
+           style="text-decoration:none"
+           title="Download full log file">⬇ .txt</a>
+      </template>
+    </div>
+
+    <!-- Log viewer -->
+    <template x-if="logs && logs.available && logs.lines.length > 0">
+      <div class="log-viewer" x-ref="logViewer">
+        <template x-for="(line, i) in logs.lines" :key="i">
+          <div class="log-line"
+               :class="{
+                 'log-line-error': /error|exception|traceback/i.test(line),
+                 'log-line-warn':  /warn|⚠/i.test(line),
+               }"
+               x-text="line"></div>
+        </template>
+      </div>
+    </template>
+
+    <template x-if="logs && logs.available && logs.lines.length === 0">
+      <div class="card hist-placeholder">
+        <div class="icon">📄</div>
+        <div>The log file is empty.</div>
+      </div>
+    </template>
+
+    <template x-if="logs && !logs.available">
+      <div class="card hist-placeholder">
+        <div class="icon">📄</div>
+        <div>No log file yet — it's created once the server starts logging.</div>
+      </div>
+    </template>
+
+    <template x-if="!logs && logsLoading">
       <div class="card hist-placeholder"><div>Loading…</div></div>
     </template>
 

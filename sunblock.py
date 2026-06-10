@@ -63,7 +63,7 @@ from db import (
     admin_log, apply_data_directory, check_db, clear_backup_codes,
     count_unused_backup_codes, create_api_token, delete_setting,
     generate_backup_codes, list_api_tokens, load_settings, query_history,
-    query_visualize, revoke_api_token, save_setting, sunblock_log,
+    query_visualize, read_logs, revoke_api_token, save_setting, sunblock_log,
     verify_and_consume_backup_code, write_db,
 )
 from db import VIZ_FIELD_META
@@ -243,13 +243,20 @@ def _page_response(template: str, context: dict) -> "TemplateResponse":
     We still need 'unsafe-eval' because Alpine.js evaluates x-data/x-on
     expressions with new Function() internally, and 'unsafe-inline' for
     style-src because Alpine's :style bindings set inline style="" attributes.
+
+    connect-src additionally allows WebSocket connections to any port on
+    localhost/127.0.0.1 — this is what lets the frontend's optional
+    "?source=<port|url>" override (see connectSocket() in sunblock.js) point
+    the live Socket.IO stream at a different SunBlockCore-LL instance running
+    on this same machine.
     """
     csp = (
         f"default-src 'self'; "
         f"script-src 'self' 'unsafe-eval'; "
         f"style-src 'self' 'unsafe-inline'; "
         f"img-src 'self' data: blob:; "
-        f"connect-src 'self'; "
+        f"connect-src 'self' "
+        f"ws://localhost:* wss://localhost:* ws://127.0.0.1:* wss://127.0.0.1:*; "
         f"frame-ancestors 'none'"
     )
     response = templates.TemplateResponse(template, context)
@@ -431,6 +438,15 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _logs_guard():
+    """Raise 404 if the application log file doesn't exist yet."""
+    if not config.POWER_LOGS_FILE or not os.path.isfile(config.POWER_LOGS_FILE):
+        raise HTTPException(
+            status_code=404,
+            detail="Log file not found. DATA_DIRECTORY may not be configured yet, or nothing has been logged.",
+        )
+
+
 def _db_guard():
     """Raise 404 if the telemetry DB doesn't exist yet."""
     if not config.DB_NAME or not os.path.isfile(config.DB_NAME):
@@ -555,6 +571,38 @@ async def download_xlsx(request: Request, user: str = Depends(verify_session_or_
         iter([content]),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=SunBlockCore-LL.xlsx"},
+    )
+
+
+@app.get("/api/logs")
+@limiter.limit("60/minute")
+async def get_logs(
+    request: Request,
+    lines:   int = Query(default=200, ge=1, le=2000),
+    user:    str = Depends(verify_session_or_token),
+):
+    """
+    Most recent lines of SunBlockCoreLogs.txt, oldest first.
+
+    Query params:
+      lines — number of trailing lines to return (1-2000, default 200)
+
+    Returns {"lines": [...], "total_lines": N, "available": bool}.
+    Rate-limited to 60 requests/minute per IP.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, read_logs, lines)
+
+
+@app.get("/api/logs/download")
+async def download_logs(request: Request, user: str = Depends(verify_session_or_token)):
+    """Download the raw application log file (auth required)."""
+    _logs_guard()
+    await admin_log("DOWNLOAD", "format=log", ip=_client_ip(request))
+    return FileResponse(
+        path=config.POWER_LOGS_FILE,
+        media_type="text/plain",
+        filename="SunBlockCoreLogs.txt",
     )
 
 

@@ -93,6 +93,7 @@
     .badge-ok   { background: rgba(16,185,129,0.15); color: var(--green); }
     .badge-err  { background: rgba(239,68,68,0.15);  color: var(--red); }
     .badge-sim  { background: rgba(139,92,246,0.18); color: #a78bfa; letter-spacing: 0.05em; }
+    .badge-source { background: rgba(245,158,11,0.15); color: var(--accent); font-weight: 500; }
 
     /* Modals */
     .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 200; align-items: flex-start; justify-content: center; padding: 40px 16px; overflow-y: auto; }
@@ -166,3 +167,9 @@
     .hist-empty { padding: 40px; text-align: center; color: var(--muted); font-size: 0.88rem; }
     .hist-placeholder { text-align: center; padding: 48px 20px; color: var(--muted); }
     .hist-placeholder .icon { font-size: 1.8rem; margin-bottom: 10px; }
+
+    /* Logs */
+    .log-viewer { max-height: 70vh; overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.78rem; line-height: 1.6; }
+    .log-line { white-space: pre-wrap; word-break: break-all; color: var(--text); }
+    .log-line-warn  { color: var(--accent); }
+    .log-line-error { color: var(--red); }

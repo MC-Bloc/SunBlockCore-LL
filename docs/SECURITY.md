@@ -180,6 +180,8 @@ Socket.IO upgrades from the same HTTP connection. TLS termination at the proxy c
 | `GET /api/data/download` | SQLite download |
 | `GET /api/data/download/csv` | CSV export |
 | `GET /api/data/download/xlsx` | XLSX export |
+| `GET /api/logs` | Recent application log lines for the Logs tab — rate-limited 60 req/min/IP |
+| `GET /api/logs/download` | Download the full `SunBlockCoreLogs.txt` |
 | `GET /api/settings` | Runtime config |
 | `PATCH /api/settings` | Mutate settings |
 | `DELETE /api/settings/{key}` | Reset to `.env` |
@@ -245,6 +247,7 @@ All rate limits are per-IP, enforced by `slowapi`. Exceeding a limit returns `42
 | `GET /api/data/history` | 60 / minute | Prevents automated scraping / DB hammering |
 | `GET /api/data/visualize/fields` | 60 / minute | Lightweight endpoint; high limit for UX |
 | `GET /api/data/visualize` | 20 / minute | Heavy DB scan (up to 5M rows); lower cap prevents DoS |
+| `GET /api/logs` | 60 / minute | Tail-read of a capped ~1MB window; high limit supports auto-refresh polling |
 
 In addition, the visualize query has a hard SQL `LIMIT 5_000_000` cap on rows fetched before Python resampling, preventing OOM on very large databases regardless of the rate limit.
 
@@ -302,7 +305,7 @@ Every authenticated write action is appended to `<DATA_DIRECTORY>/SunBlockAdminA
 | `RESET_SETTING` | Setting reverted to `.env` value |
 | `PASSWORD_CHANGE` | Successful admin password change |
 | `PASSWORD_CHANGE_FAILED` | Incorrect current password supplied |
-| `DOWNLOAD` | Database downloaded (format=sqlite / csv / xlsx) |
+| `DOWNLOAD` | Database or log file downloaded (format=sqlite / csv / xlsx / log) |
 | `POWER_PROFILE` | Power profile switched |
 | `CONTROLLER_PARAMS_UPDATE` | Controller register write |
 | `RTC_SYNC` | RTC synchronised to server time |

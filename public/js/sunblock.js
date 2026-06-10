@@ -62,6 +62,7 @@
       // ── State ──
       tab:          'live',
       connected:    false,
+      liveSource:   null,
       authed:       initialAuth,
       simMode:      initialSimMode,
       envDefaults:  initialEnvDefaults,
@@ -100,6 +101,13 @@
       history:    null,
       histFilter: { from: '', to: '', limit: 100, order: 'desc' },
       histLoading: false,
+
+      // Logs
+      logs:        null,
+      logsFilter:  { lines: 200 },
+      logsLoading: false,
+      logsAutoRefresh: false,
+      _logsTimer:  null,
 
       // Login modal
       loginOpen:  false,
@@ -157,7 +165,28 @@
 
       // ── Connection ──
       connectSocket() {
-        const socket = io();
+        // Optional ?source=<port|url> override: point the live Socket.IO
+        // stream at a different SunBlockCore-LL instance running on this
+        // same machine (e.g. "?source=3708" or "?source=http://localhost:3708")
+        // instead of the instance that served this page. Only localhost /
+        // 127.0.0.1 are permitted by the connect-src CSP directive.
+        const params = new URLSearchParams(window.location.search);
+        let source = params.get('source');
+        let opts = {};
+        if (source) {
+          // Bare port number shorthand → same host, different port.
+          if (/^\d+$/.test(source)) {
+            source = `${window.location.protocol}//${window.location.hostname}:${source}`;
+          }
+          // Cross-origin connections must skip the polling transport: it
+          // requires CORS response headers, which this server doesn't send
+          // (cors_allowed_origins=[] disables CORS handling entirely).
+          // WebSocket isn't subject to that, and the engine.io server
+          // doesn't validate Origin when cors_allowed_origins is [].
+          opts = { transports: ['websocket'] };
+          this.liveSource = source;
+        }
+        const socket = source ? io(source, opts) : io();
         socket.on('connect',    () => this.connected = true);
         socket.on('disconnect', () => this.connected = false);
         socket.on('solar_data', d => this.onLiveData(d));
@@ -333,6 +362,7 @@
       async doLogout() {
         await fetch('/api/logout', { method: 'POST' });
         this.authed = false;
+        this._stopLogsTimer();
         this.tab = 'live';  // public users only see Live
       },
 
@@ -352,6 +382,10 @@
         if (name === 'energy'     && !this.stats)    this.loadStats();
         if (name === 'settings')                     { this.loadSettings(); this.loadTokens(); this.loadTwoFAStatus(); }
         if (name === 'history'    && !this.history)  this.loadHistory(0);
+        if (name === 'logs'       && !this.logs)     this.loadLogs();
+        // Auto-refresh only runs while the Logs tab is actually visible.
+        if (name !== 'logs') this._stopLogsTimer();
+        else if (this.logsAutoRefresh) this._startLogsTimer();
       },
 
       // ── Visualize ──
@@ -776,6 +810,39 @@
         const next = this.history.offset + dir * this.history.limit;
         if (next < 0 || next >= this.history.total) return;
         this.loadHistory(next);
+      },
+
+      // ── Logs ──
+      async loadLogs() {
+        this.logsLoading = true;
+        try {
+          const p = new URLSearchParams({ lines: this.logsFilter.lines });
+          const res = await fetch('/api/logs?' + p);
+          if (res.status === 401) { this.authed = false; this.tab = 'live'; return; }
+          if (res.ok) {
+            this.logs = await res.json();
+            // Keep the view pinned to the most recent entries.
+            this.$nextTick(() => {
+              const el = this.$refs.logViewer;
+              if (el) el.scrollTop = el.scrollHeight;
+            });
+          }
+        } catch { /* swallow — server down */ }
+        finally  { this.logsLoading = false; }
+      },
+
+      toggleLogsAutoRefresh() {
+        if (this.logsAutoRefresh) this._startLogsTimer();
+        else this._stopLogsTimer();
+      },
+
+      _startLogsTimer() {
+        this._stopLogsTimer();
+        this._logsTimer = setInterval(() => this.loadLogs(), 5000);
+      },
+
+      _stopLogsTimer() {
+        if (this._logsTimer) { clearInterval(this._logsTimer); this._logsTimer = null; }
       },
 
     })); // Alpine.data

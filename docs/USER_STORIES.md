@@ -266,7 +266,7 @@ As an **Admin**, I want to remove an extra chart with a single click, so that I 
 As a **Viewer** (unauthenticated), I want to see live data cards and rolling charts without logging in, so that the solar output is visible to anyone on the local network without credentials.
 
 **US-057**  
-As a **Viewer** (unauthenticated), I want all configuration tabs (Settings, History, Visualize, Parameters, Energy) to be hidden until I log in, so that the panel's capabilities are not exposed to casual visitors.
+As a **Viewer** (unauthenticated), I want all configuration tabs (Settings, History, Visualize, Parameters, Energy, Logs) to be hidden until I log in, so that the panel's capabilities are not exposed to casual visitors.
 
 **US-058**  
 As an **Operator**, I want the admin login page to be at a secret, randomly generated URL rather than `/admin` or `/login`, so that automated bots cannot find it by guessing common paths.
@@ -311,6 +311,25 @@ As an **Operator**, I want token management itself (`/api/tokens`) and the passw
 
 ---
 
+## Logs Tab
+
+**US-076**  
+As an **Admin**, I want a Logs tab in the admin panel that shows the most recent lines of `SunBlockCoreLogs.txt`, so that I can troubleshoot startup errors, hardware read failures, and polling issues without an SSH session.
+
+**US-077**  
+As an **Admin**, I want to choose how many trailing log lines to load (100 to 2000), so that I can balance how much history I see against how long the request takes.
+
+**US-078**  
+As an **Admin**, I want an optional auto-refresh toggle that polls for new log lines every 5 seconds, so that I can watch the log update live while reproducing an issue, without manually clicking refresh.
+
+**US-079**  
+As an **Admin**, I want error and warning lines in the log viewer to be visually highlighted, so that I can spot failures at a glance in a long scroll of routine output.
+
+**US-080**  
+As an **Admin**, I want to download the full `SunBlockCoreLogs.txt` file, so that I can share it with another developer or archive it for a longer investigation than the in-browser viewer supports.
+
+---
+
 ## Acceptance Criteria Summary
 
 | Story | Status |
@@ -332,3 +351,4 @@ As an **Operator**, I want token management itself (`/api/tokens`) and the passw
 | US-060 – US-063 (Audit logging + DoS + path protection) | Implemented |
 | US-064 – US-068 (API tokens for external/programmatic access) | Implemented |
 | US-069 – US-075 (Two-factor authentication) | Implemented |
+| US-076 – US-080 (Logs tab) | Implemented |

@@ -20,6 +20,9 @@
     <div class="status">
       <div class="dot" :style="connected ? 'background:var(--green)' : 'background:var(--red)'"></div>
       <span x-text="connected ? 'Connected' : 'Disconnected'">Connecting…</span>
+      <span x-show="liveSource" class="badge badge-source"
+            :title="'Live data sourced from ' + liveSource"
+            x-text="'→ ' + liveSource"></span>
     </div>
   </header>
 

@@ -404,6 +404,35 @@ As a further latency reduction, `parse_data()`'s 9 individual `ctrl.get_*()` cal
 
 ---
 
+## Session 13 — Application Logs Tab
+
+### Problem
+
+Diagnosing issues on the deployed server (e.g. the polling-loop regressions in Session 12) required SSHing in and `tail`-ing `SunBlockCoreLogs.txt` by hand. There was no way to view recent application log output from the admin panel itself.
+
+### Solution: Logs tab + `GET /api/logs` + `GET /api/logs/download`
+
+**`db.py`** — added `read_logs(lines=200)`:
+- Returns `{"lines": [...], "total_lines": N, "available": bool}`, oldest-first.
+- Reads only the trailing `_LOG_READ_MAX_BYTES` (1MB) of `SunBlockCoreLogs.txt` via `os.path.getsize()` + `f.seek(size - read_size)`, so the cost stays constant no matter how large the log file grows. If the seek lands mid-line, the partial first line is dropped.
+- Returns `{"lines": [], "total_lines": 0, "available": False}` if `DATA_DIRECTORY`/`POWER_LOGS_FILE` isn't configured or the file doesn't exist yet (e.g. brand-new install before the first log write).
+
+**`sunblock.py`** — added `_logs_guard()` (404 if the log file doesn't exist) alongside the existing `_db_guard()`, plus two routes after the download endpoints:
+- `GET /api/logs?lines=N` (1-2000, default 200) — `verify_session_or_token`, rate-limited 60/min, runs `read_logs()` via `run_in_executor`.
+- `GET /api/logs/download` — `verify_session_or_token`, streams the raw `SunBlockCoreLogs.txt` via `FileResponse` and writes a `DOWNLOAD` audit-log entry (`detail="format=log"`).
+
+**`templates/admin.html`** — added a "Logs" nav tab (`extra_tabs` block, auth-gated like the other admin tabs) and a new LOGS panel: a toolbar (line-count selector, manual refresh, auto-refresh toggle, line-count summary, `.txt` download link) above a scrollable monospace `.log-viewer` that renders one `.log-line` per entry, plus placeholder states for "no log file yet" and "log file is empty".
+
+**`public/js/sunblock.js`** — added `logs`, `logsFilter`, `logsLoading`, `logsAutoRefresh`, `_logsTimer` state; `loadLogs()` fetches `/api/logs` and auto-scrolls `$refs.logViewer` to the bottom via `$nextTick`; `toggleLogsAutoRefresh()` / `_startLogsTimer()` / `_stopLogsTimer()` manage a 5-second `setInterval` that only runs while the Logs tab is active (stopped on tab switch and on logout in `doLogout()`); `switchTab()` triggers the initial load and starts/stops the timer accordingly.
+
+**`public/css/index.css`** — added `.log-viewer` (scrollable monospace container, `max-height: 70vh`), `.log-line` (wraps long lines), `.log-line-warn` (amber, matches `/warn|⚠/i`), and `.log-line-error` (red, matches `/error|exception|traceback/i`).
+
+### Why a capped tail-read instead of loading the whole file
+
+`SunBlockCoreLogs.txt` grows unbounded over the life of a deployment. Loading it entirely on every `/api/logs` poll (especially with auto-refresh enabled) would mean the request cost grows linearly with deployment age. Seeking to `size - 1MB` keeps the read — and therefore the `/api/logs` response time — bounded regardless of file size, at the cost of not being able to search arbitrarily far back in-browser. For that case, `GET /api/logs/download` provides the full file.
+
+---
+
 ## Summary of All API Endpoints (current)
 
 | Method | Path | Auth | Description |
@@ -422,6 +451,8 @@ As a further latency reduction, `parse_data()`'s 9 individual `ctrl.get_*()` cal
 | GET | `/api/data/download` | **Yes** | Download as SQLite |
 | GET | `/api/data/download/csv` | **Yes** | Download as CSV |
 | GET | `/api/data/download/xlsx` | **Yes** | Download as Excel |
+| GET | `/api/logs` | **Yes** (60/min) | Recent application log lines: `?lines=` (1-2000, default 200) |
+| GET | `/api/logs/download` | **Yes** | Download `SunBlockCoreLogs.txt` |
 | GET | `/api/settings` | **Yes** | Current runtime settings |
 | PATCH | `/api/settings` | **Yes** | Update one or more settings |
 | DELETE | `/api/settings/{key}` | **Yes** | Reset setting to .env value |
@@ -461,17 +492,17 @@ As a further latency reduction, `parse_data()`'s 9 individual `ctrl.get_*()` cal
 |---|---|---|
 | `config.py` | 3, 5, 8, 10 | Module introduced; SETTINGS_DB_NAME, ENV_DEFAULTS, ADMIN_PATH, ADMIN_AUDIT_FILE; SECRET_KEY default removed (now ""), TOTP_SECRET/TOTP_ENABLED runtime state |
 | `auth.py` | 3, 4, 5, 9, 10 | Module introduced; SettingsUpdate, PasswordChange, TokenCreateRequest, TwoFACodeRequest, TwoFADisableRequest models; verify_session_or_token dependency; pending-2FA JWT helpers (create/verify), verify_totp_code; "purpose" claim rejected by all session-verifying functions |
-| `db.py` | 3, 5, 7, 8, 9, 10 | Module introduced; settings store (now incl. secret_key/totp_secret/totp_enabled + auto-generate-and-persist SECRET_KEY), query_history, query_visualize, admin_log, _validate_data_directory, api_tokens store, backup_codes store (generate/verify-and-consume/count/clear) |
+| `db.py` | 3, 5, 7, 8, 9, 10, 13 | Module introduced; settings store (now incl. secret_key/totp_secret/totp_enabled + auto-generate-and-persist SECRET_KEY), query_history, query_visualize, admin_log, _validate_data_directory, api_tokens store, backup_codes store (generate/verify-and-consume/count/clear); read_logs() capped tail-read of SunBlockCoreLogs.txt (Session 13) |
 | `hardware.py` | 3, 12 | Extracted from sunblock.py; CPUPowerDraw made optional/guarded (float, defaults to 0.0); 30s cache for check_power_profile()/set_power_profile() |
 | `simulator.py` | 2, 3 | Created; extracted to own module |
-| `sunblock.py` | 2–12 | Refactored; all routes, security hardening, rate limits, CSP, audit log calls; API token routes; two-step login + full /api/2fa/* route set; removed obsolete SECRET_KEY startup warning; routes now render public.html/admin.html; CSP nonce + `import secrets` removed (Session 11); polling_loop sleep made interval-correcting via loop.time() (Session 12) |
+| `sunblock.py` | 2–13 | Refactored; all routes, security hardening, rate limits, CSP, audit log calls; API token routes; two-step login + full /api/2fa/* route set; removed obsolete SECRET_KEY startup warning; routes now render public.html/admin.html; CSP nonce + `import secrets` removed (Session 11); polling_loop sleep made interval-correcting via loop.time() (Session 12); _logs_guard() + GET /api/logs + GET /api/logs/download (Session 13) |
 | `templates/index.html` | 4–10 | **Deleted in Session 11** — split into `_base.html`/`admin.html`/`public.html` + extracted `public/css/index.css` + `public/js/sunblock.js`. History (4–10): Settings, History, Visualize tabs; extra charts; auth-gating; CSP nonce; Plotly; API Tokens panel; Two-Factor Authentication panel + two-step login modal; vendored QR rendering |
 | `templates/_base.html` | 11 | Created: shared page shell extracted from index.html; declares 4 empty Jinja2 blocks (referrer_meta, extra_tabs, live_admin_extras, admin_panels); 110 lines (was 1062 right after the split, before CSS/JS extraction) |
-| `templates/admin.html` | 11 | Created: `{% extends "_base.html" %}`, fills all 4 blocks with the full admin UI; rendered only at /<ADMIN_PATH> |
+| `templates/admin.html` | 11, 13 | Created: `{% extends "_base.html" %}`, fills all 4 blocks with the full admin UI; rendered only at /<ADMIN_PATH>. Session 13: added "Logs" nav tab + LOGS panel (toolbar, log viewer, placeholder states) |
 | `templates/public.html` | 11 | Created: `{% extends "_base.html" %}`, overrides nothing — admin blocks stay empty |
 | `templates/404.html` | 8 | Created: custom 404 page |
-| `public/css/index.css` | 11 | Created: extracted page styles (verbatim from the old inline `<style>` block, 168 lines) |
-| `public/js/sunblock.js` | 11 | Created: extracted Alpine.data('sunblock', ...) component + supporting constants (verbatim from the old inline `<script>`, 781 lines) |
+| `public/css/index.css` | 11, 13 | Created: extracted page styles (verbatim from the old inline `<style>` block, 168 lines). Session 13: added `.log-viewer`, `.log-line`, `.log-line-warn`, `.log-line-error` |
+| `public/js/sunblock.js` | 11, 13 | Created: extracted Alpine.data('sunblock', ...) component + supporting constants (verbatim from the old inline `<script>`, 781 lines). Session 13: added Logs tab state + loadLogs()/toggleLogsAutoRefresh()/_startLogsTimer()/_stopLogsTimer(), wired into switchTab() and doLogout() |
 | `sample.env` | 2, 8, 10 | SIM_MODE, ADMIN_PATH, cleanup; SECRET_KEY now documented as optional/auto-generated |
 | `scripts/deploy.sh` | early, 8 | systemd deployment; ADMIN_PATH generation; openpyxl |
 | `scripts/vendor.sh` | 8, 10 | uPlot → Plotly basic bundle; added qrcodejs for client-side 2FA QR rendering |

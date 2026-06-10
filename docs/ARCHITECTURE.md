@@ -394,6 +394,7 @@ That inline script has since been extracted to `public/js/sunblock.js` (a same-o
 | `GET /api/data/history` | 60 / minute per IP |
 | `GET /api/data/visualize/fields` | 60 / minute per IP |
 | `GET /api/data/visualize` | 20 / minute per IP |
+| `GET /api/logs` | 60 / minute per IP |
 
 ### Endpoint access model
 
@@ -401,6 +402,7 @@ That inline script has since been extracted to `public/js/sunblock.js` (a same-o
 |---|---|---|
 | Public live view | No | `GET /api/data`, `GET /` |
 | Historical / analysis data | Yes (cookie or API token) | `GET /api/data/history`, `GET /api/data/visualize` |
+| Application logs | Yes (cookie or API token) | `GET /api/logs`, `GET /api/logs/download` |
 | Exports | Yes (cookie or API token) | `GET /api/data/download/*` |
 | Configuration writes | Yes (cookie or API token) | `PATCH /api/settings` |
 | Hardware writes | Yes (cookie or API token) + real controller | `PUT /api/controller/parameters`, `POST /api/performance-mode` |
@@ -453,7 +455,7 @@ The UI is a **single-page application** assembled from a small set of Jinja2 tem
 Originally the entire frontend (CSS + HTML + JS, ~1850 lines) lived in one `templates/index.html`, with `{% if admin_mode %}` guards switching admin content on/off. That file was split into:
 
 - **`templates/_base.html`** — the shared shell: `<head>` (incl. the CSS `<link>`), header, the Live tab/panel, the Alpine `x-data` bootstrap div, and the closing `<script>` tags. It declares four empty Jinja2 blocks where admin-only markup used to be inlined: `referrer_meta`, `extra_tabs`, `live_admin_extras`, `admin_panels`.
-- **`templates/admin.html`** — `{% extends "_base.html" %}`, overriding all four blocks with the full admin UI (Parameters/Energy/Settings/History/Visualize panels, the login modal, the edit-params modal, the logout toolbar, etc). Rendered **only** by the route registered at the secret `ADMIN_PATH` slug.
+- **`templates/admin.html`** — `{% extends "_base.html" %}`, overriding all four blocks with the full admin UI (Parameters/Energy/Settings/History/Visualize/Logs panels, the login modal, the edit-params modal, the logout toolbar, etc). Rendered **only** by the route registered at the secret `ADMIN_PATH` slug.
 - **`templates/public.html`** — `{% extends "_base.html" %}`, overriding nothing. Because the blocks default to empty, the rendered output for `GET /` **structurally cannot contain** any admin markup — it's not hidden with CSS or `x-show`, it's simply never generated or transmitted.
 
 This was chosen over copy-pasting two near-identical files specifically to avoid maintaining duplicate copies of the shared CSS/header/Live-tab/Alpine-bootstrap — changes to shared chrome happen in exactly one place (`_base.html`) and automatically apply to both page variants.
@@ -500,10 +502,10 @@ Six values are baked into the page at render time via Jinja2, in `_base.html`:
 There are two distinct page variants, now backed by **two distinct templates** (rather than one template branching on `admin_mode`):
 
 **Public live view (`GET /`)** — renders `public.html` (`admin_mode=False`)
-Only the Live tab is present in the rendered HTML. Admin panels (Parameters, Energy, Settings, History, Visualize), the login/edit-params modals, the logout toolbar, the power-profile switcher, and the data-directory warning are absent from the response — not because of an `{% if %}` guard evaluating false, but because `public.html` simply never overrides the blocks that would contain them. The browser receives a page that contains only the live data cards, rolling charts, and Socket.IO connection logic.
+Only the Live tab is present in the rendered HTML. Admin panels (Parameters, Energy, Settings, History, Visualize, Logs), the login/edit-params modals, the logout toolbar, the power-profile switcher, and the data-directory warning are absent from the response — not because of an `{% if %}` guard evaluating false, but because `public.html` simply never overrides the blocks that would contain them. The browser receives a page that contains only the live data cards, rolling charts, and Socket.IO connection logic.
 
 **Admin panel (`GET /<ADMIN_PATH>`)** — renders `admin.html` (`admin_mode=True`)
-The full page is rendered: all six tabs, both modals, all admin controls. Admin tabs (`Parameters`, `Energy`, `Settings`, `History`, `Visualize`) are additionally wrapped in Alpine `<template x-if="authed">` so they appear in the DOM only after a successful login. The `switchTab()` method provides a UX guard; the real data protection is server-side (401 on all data endpoints).
+The full page is rendered: all seven tabs, both modals, all admin controls. Admin tabs (`Parameters`, `Energy`, `Settings`, `History`, `Visualize`, `Logs`) are additionally wrapped in Alpine `<template x-if="authed">` so they appear in the DOM only after a successful login. The `switchTab()` method provides a UX guard; the real data protection is server-side (401 on all data endpoints).
 
 ### Real-time updates
 
@@ -517,13 +519,19 @@ Admins can add any telemetry variable as an additional rolling chart on the Live
 
 `plotViz()` calls `GET /api/data/visualize` with the selected date range, fields, sampling rate, smoothing window, and spike-filter flag. The server runs the same processing pipeline as the `SunBlock_DataProcessing.ipynb` notebook (date filter → row resampling → spike forward-fill → moving-average smoothing). The result is rendered with `Plotly.react()` on a single multi-trace chart.
 
+### Logs tab
+
+`loadLogs()` calls `GET /api/logs?lines=N` (default 200, max 2000), which runs `db.read_logs()` in a thread-pool executor — it reads only the trailing ~1MB of `SunBlockCoreLogs.txt` via `os.path.getsize()` + `f.seek()`, so the request stays cheap regardless of how large the log file has grown. The response is `{lines: [...], total_lines: N, available: bool}`; the panel renders each line in a monospace `.log-viewer` block, colour-coding lines that match `/error|exception|traceback/i` (red) or `/warn|⚠/i` (amber) via Alpine `:class` bindings.
+
+A "Auto-refresh" toggle starts a 5-second `setInterval` (`_startLogsTimer()`/`_stopLogsTimer()`) that re-calls `loadLogs()`; the timer is stopped whenever the Logs tab isn't active or the user logs out, so it never polls in the background. After each load, `$nextTick` scrolls `$refs.logViewer` to the bottom so the view stays pinned to the newest entries. A "⬇ .txt" link hits `GET /api/logs/download`, which streams the full log file via `FileResponse` and records a `DOWNLOAD` audit-log entry (`detail="format=log"`).
+
 ### Charting library
 
 All charts use **Plotly.js basic bundle** (vendored at `public/vendor/plotly.min.js`, ~1MB). The same library covers both live rolling charts (`Plotly.newPlot` + `Plotly.extendTraces`) and the historical visualize chart (`Plotly.react`).
 
 ### Tab architecture
 
-Six tabs share a single Alpine component instance in admin mode; the public view has only the Live tab. Each tab's data is fetched lazily on first visit. Panels use `x-show` (not `x-if`) so DOM is retained between tab switches — charts don't need to be re-initialised.
+Seven tabs share a single Alpine component instance in admin mode; the public view has only the Live tab. Each tab's data is fetched lazily on first visit. Panels use `x-show` (not `x-if`) so DOM is retained between tab switches — charts don't need to be re-initialised.
 
 ---
 

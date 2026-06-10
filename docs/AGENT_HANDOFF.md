@@ -12,7 +12,7 @@ SunBlockCore-LL is a real-time solar energy monitoring and admin panel for the S
 - Reads telemetry from an Epever MPPT charge controller over RS-485/Modbus
 - Persists readings to SQLite at 1 reading/second
 - Broadcasts live data to browser clients via Socket.IO
-- Serves a single-page Alpine.js admin panel with 6 tabs: Live, Parameters, Energy, Settings, History, Visualize
+- Serves a single-page Alpine.js admin panel with 7 tabs: Live, Parameters, Energy, Settings, History, Visualize, Logs
 - Has a simulator mode (for development without hardware) that generates realistic data from 1.28M rows of real Montreal solar data
 
 **Repository:** the root of this repo (wherever you cloned it)
@@ -35,7 +35,7 @@ templates/
                    bootstrap, <script> tags). Declares 4 empty Jinja2 blocks:
                    referrer_meta, extra_tabs, live_admin_extras, admin_panels
   admin.html    ← extends _base.html; fills all 4 blocks with the full admin UI
-                   (Parameters/Energy/Settings/History/Visualize panels, login
+                   (Parameters/Energy/Settings/History/Visualize/Logs panels, login
                    + edit-params modals). Rendered ONLY at /<ADMIN_PATH>
   public.html   ← extends _base.html; overrides nothing — admin blocks render
                    empty, so zero admin markup is ever sent for GET /
@@ -170,6 +170,8 @@ CREATE TABLE solardata (
 | GET | `/api/data/download` | **Yes** | SQLite download |
 | GET | `/api/data/download/csv` | **Yes** | CSV export |
 | GET | `/api/data/download/xlsx` | **Yes** | XLSX export |
+| GET | `/api/logs` | **Yes** (60/min) | Recent application log lines for the Logs tab: `?lines=` (1-2000, default 200) |
+| GET | `/api/logs/download` | **Yes** | Download `SunBlockCoreLogs.txt` |
 | GET/PATCH | `/api/settings` | **Yes** | Get/update runtime settings |
 | DELETE | `/api/settings/{key}` | **Yes** | Reset setting to .env value |
 | POST | `/api/settings/password` | Session only | Change admin password |
@@ -342,13 +344,14 @@ There is currently no automated test suite. Manual testing procedure:
 1. Start with `SIM_MODE=true DATA_DIRECTORY=./demo_data/`
 2. Open `http://localhost:3707` in a browser — verify live data, data cards, and charts visible without login
 3. Navigate to `http://localhost:3707/<ADMIN_PATH>` — verify login modal appears
-4. Log in; verify all 6 tabs become accessible
+4. Log in; verify all 7 tabs become accessible
 5. **History:** load, filter by date, paginate
 6. **Visualize:** select variables, set date range, click Plot — verify chart renders
 7. **Settings:** change a setting (e.g. `read_interval=2`), restart server, verify it persisted; reset it, verify it returned to `.env` value
 8. **Downloads:** CSV, XLSX, SQLite — verify files are downloaded
-9. **Audit log:** check `demo_data/SunBlockAdminAudit.txt` — verify login, settings change, download are all recorded
-10. Try setting `data_directory` to `/etc` — verify it returns a 400 and the PATH_REJECTED entry appears in the audit log
+9. **Logs:** open the Logs tab — verify recent log lines render, "Auto-refresh" toggles a 5s poll, and the `.txt` download link works
+10. **Audit log:** check `demo_data/SunBlockAdminAudit.txt` — verify login, settings change, download are all recorded
+11. Try setting `data_directory` to `/etc` — verify it returns a 400 and the PATH_REJECTED entry appears in the audit log
 
 ---
 
@@ -393,6 +396,9 @@ curl http://localhost:3707/api/data
 
 # Test that history requires auth (should return 401)
 curl http://localhost:3707/api/data/history
+
+# Test the logs endpoint (requires auth — use a session cookie or bearer token)
+curl -H "Authorization: Bearer sbll_<token>" "http://localhost:3707/api/logs?lines=50"
 
 # Test custom 404
 curl http://localhost:3707/nonexistent-page

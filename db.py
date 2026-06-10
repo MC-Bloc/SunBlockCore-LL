@@ -27,6 +27,52 @@ def _write_log(line: str):
         f.write(line)
 
 
+_LOG_READ_MAX_BYTES = 1_000_000  # only look at the last ~1MB of the file
+
+
+def read_logs(lines: int = 200) -> dict:
+    """
+    Return the most recent lines of SunBlockCoreLogs.txt, oldest first.
+
+    Reads only the tail of the file (up to _LOG_READ_MAX_BYTES) so this stays
+    cheap even once the log has grown large on a long-running deployment.
+    Opens its own read-only file handle — never shares state with
+    sunblock_log()'s append-mode writes.
+
+    Returns {"lines": [...], "total_lines": N, "available": bool}.
+    If SunBlockCoreLogs.txt doesn't exist yet (DATA_DIRECTORY not configured,
+    or nothing has been logged yet), returns an empty payload with
+    available=False instead of raising.
+    """
+    empty = {"lines": [], "total_lines": 0, "available": False}
+    if not config.POWER_LOGS_FILE or not os.path.isfile(config.POWER_LOGS_FILE):
+        return empty
+
+    lines = max(1, min(2000, lines))
+
+    try:
+        size = os.path.getsize(config.POWER_LOGS_FILE)
+        with open(config.POWER_LOGS_FILE, "rb") as f:
+            read_size = min(size, _LOG_READ_MAX_BYTES)
+            f.seek(size - read_size)
+            data = f.read(read_size)
+    except OSError:
+        return empty
+
+    text = data.decode("utf-8", errors="replace")
+    all_lines = text.splitlines()
+    # If we seeked into the middle of the file, the first line is likely a
+    # truncated fragment of a longer line — drop it.
+    if read_size < size and all_lines:
+        all_lines = all_lines[1:]
+
+    return {
+        "lines": all_lines[-lines:],
+        "total_lines": len(all_lines),
+        "available": True,
+    }
+
+
 # ── Admin audit logging ───────────────────────────────────────────────────────
 
 async def admin_log(action: str, detail: str = "", ip: str = "") -> None:

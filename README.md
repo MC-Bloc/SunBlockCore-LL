@@ -29,6 +29,7 @@ Epever MPPT Charge Controller
 - **Historical data browser** — paginated table with date-range filtering; auth-required
 - **Visualize tab** — plot any combination of variables over a custom date range with configurable sampling rate, moving-average smoothing, and spike filtering; replicates the offline notebook workflow in-browser
 - **Data export** — download the full telemetry database as SQLite, CSV, or XLSX (auth-required)
+- **Logs tab** — view and tail the application log (`SunBlockCoreLogs.txt`) from the admin panel, with optional 5-second auto-refresh and full-file download (auth-required)
 - **Power profile switching** — Performance / Balanced / Power Saver, applied immediately to the OS
 - **Controller parameters** — view and edit battery configuration and voltage thresholds from the browser
 - **Energy statistics** — today / this month / this year / all-time generated and consumed kWh
@@ -117,7 +118,7 @@ simulator.py         Synthetic data generation from real deployment baselines
 templates/
   _base.html         Shared page shell (head, header, Live tab, Alpine bootstrap)
   admin.html         Full admin panel (Parameters, Energy, Settings, History, Visualize,
-                     login + edit-params modals) — extends _base.html; secret-path only
+                     Logs, login + edit-params modals) — extends _base.html; secret-path only
   public.html        Public live view — extends _base.html, overrides nothing
   404.html           Custom 404 page
 public/
@@ -160,6 +161,8 @@ All endpoints return JSON. Write operations and data access require either a val
 | GET | `/api/data/download` | **Yes** | Download telemetry as SQLite |
 | GET | `/api/data/download/csv` | **Yes** | Download telemetry as CSV |
 | GET | `/api/data/download/xlsx` | **Yes** | Download telemetry as Excel |
+| GET | `/api/logs` | **Yes** (60 req/min) | Most recent application log lines: `?lines=` (1-2000, default 200) |
+| GET | `/api/logs/download` | **Yes** | Download the full `SunBlockCoreLogs.txt` |
 | GET | `/api/settings` | **Yes** | Current runtime settings |
 | PATCH | `/api/settings` | **Yes** | Update settings live |
 | DELETE | `/api/settings/{key}` | **Yes** | Reset setting to `.env` value |
