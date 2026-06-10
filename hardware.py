@@ -60,17 +60,52 @@ def parse_data() -> dict:
         except Exception:
             cpu_power = 0.0
 
+    # ── Two bulk Modbus reads instead of 9 individual ones ────────────────────
+    # Each individual get_*() call is a separate serial round-trip (timeout=1 s).
+    # Two bulk reads cover all the same registers in just 2 round-trips.
+    #
+    # Bulk 1 — 0x3100–0x311A (27 registers, FC=4):
+    #   PV voltage/current/power, battery charge power, load power,
+    #   battery temperature, battery state-of-charge.
+    r1 = ctrl.retriable_read_registers(0x3100, 27, 4)
+    #
+    # Bulk 2 — 0x331A–0x331C (3 registers, FC=4):
+    #   Battery voltage, battery current (32-bit signed).
+    r2 = ctrl.retriable_read_registers(0x331A, 3, 4)
+
+    # The driver uses minimalmodbus BYTEORDER_LITTLE_SWAP for all 32-bit values:
+    #   combined = (_swap(hi_reg) << 16) | _swap(lo_reg)
+    # where _swap byte-swaps within each 16-bit word and lo_reg is at the lower
+    # Modbus address.  Replicate that formula here so batch parsing is identical
+    # to what retriable_read_long() produces.
+    def _swap(x: int) -> int:
+        return ((x & 0xFF) << 8) | ((x >> 8) & 0xFF)
+
+    def _long32(lo: int, hi: int, signed: bool = False) -> float:
+        val = (_swap(hi) << 16) | _swap(lo)
+        if signed and val > 0x7FFF_FFFF:
+            val -= 0x1_0000_0000
+        return val / 100
+
+    def _s16(raw: int) -> float:
+        """Signed 16-bit register → float (÷100)."""
+        if raw > 0x7FFF:
+            raw -= 0x10000
+        return raw / 100
+
+    # r1 index = register address − 0x3100
+    # r2 index = register address − 0x331A
     return {
         "Timestamp":          datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "PVVoltage":          ctrl.get_solar_voltage(),
-        "PVCurrent":          ctrl.get_solar_current(),
-        "PVPower":            ctrl.get_solar_power(),
-        "BattVoltage":        ctrl.get_battery_voltage(),
-        "BattTemperature":    ctrl.get_battery_temperature(),
-        "BattChargePower":    ctrl.get_battery_power(),
-        "BattOverallCurrent": ctrl.get_battery_current(),
-        "BattPercentage":     ctrl.get_battery_state_of_charge(),
-        "LoadPower":          ctrl.get_load_power(),
+        "PVVoltage":          r1[0]  / 100,                        # 0x3100
+        "PVCurrent":          r1[1]  / 100,                        # 0x3101
+        "PVPower":            _long32(r1[2],  r1[3]),               # 0x3102–0x3103
+        "BattVoltage":        r2[0]  / 100,                        # 0x331A
+        "BattTemperature":    _s16(r1[16]),                         # 0x3110
+        "BattChargePower":    _long32(r1[6],  r1[7]),               # 0x3106–0x3107
+        "BattOverallCurrent": _long32(r2[1],  r2[2], signed=True),  # 0x331B–0x331C
+        "BattPercentage":     r1[26],                               # 0x311A (integer %)
+        "LoadPower":          _long32(r1[14], r1[15]),              # 0x310E–0x310F
         "CPUPowerDraw":       cpu_power,
         "PowerProfile":       check_power_profile(),
     }
