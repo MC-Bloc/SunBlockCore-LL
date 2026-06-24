@@ -68,9 +68,9 @@ def parse_data() -> dict:
         "BattVoltage":        ctrl.get_battery_voltage(),
         "BattTemperature":    ctrl.get_battery_temperature(),
         "BattChargePower":    ctrl.get_battery_power(),
-        "BattOverallCurrent": ctrl.get_battery_current(),
-        "BattPercentage":     ctrl.get_battery_state_of_charge(),
         "LoadPower":          ctrl.get_load_power(),
+        "BattPercentage":     ctrl.get_battery_state_of_charge(),
+        "BattOverallCurrent": ctrl.get_battery_current(),
         "CPUPowerDraw":       cpu_power,
         "PowerProfile":       check_power_profile(),
     }
