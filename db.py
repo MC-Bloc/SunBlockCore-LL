@@ -73,7 +73,7 @@ def check_db():
             "CREATE TABLE solardata("
             "Timestamp text, PVVoltage real, PVCurrent real, PVPower real, "
             "BattVoltage real, BattTemperature real, BattChargePower real, "
-            "LoadPower real, BattPercentage int, BattOverallCurrent real, "
+            "BattOverallCurrent real, BattPercentage int, LoadPower real, "
             "CPUPowerDraw real, PowerProfile text)"
         )
 
