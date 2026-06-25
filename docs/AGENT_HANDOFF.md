@@ -292,16 +292,30 @@ These exist because of bugs that have already happened once — read before touc
 
 - **`CPUPowerDraw` is optional and must stay guarded.** `parse_data()` only shells out to `config.POWER_DRAW_SCRIPT` (from `POWER_DRAW_SCRIPT_ADDR`) if that value is truthy, and wraps the call in `try/except`, defaulting to `0.0` (`float`, matches the `REAL` column). An earlier unguarded `subprocess.run([config.POWER_DRAW_SCRIPT], ...)` with `POWER_DRAW_SCRIPT_ADDR` blank threw `TypeError` on the first poll tick and silently killed the entire polling loop — symptom: "the server runs but isn't broadcasting any events on the socket," with no other error visible. Don't remove the `if config.POWER_DRAW_SCRIPT:` guard or the `try/except`.
 
-- **`check_power_profile()` is cached for 30s** (`_PROFILE_CACHE_TTL`/`_cached_profile`/`_cached_profile_at` module globals in `hardware.py`). It exists because `sudo powerprofilesctl get` costs ~100–500ms (sudo + D-Bus), which at `READ_INTERVAL=1` was the dominant source of multi-second broadcast latency. `set_power_profile()` resets `_cached_profile_at = 0.0` to force a fresh read after a profile change — preserve that if you touch this code.
+- **`check_power_profile()` is cached for 30s** (`_PROFILE_CACHE_TTL`/`_cached_profile`/`_cached_profile_at` module globals in `hardware.py`). It exists because `sudo powerprofilesctl get` costs ~100–500ms (sudo + D-Bus), which at `READ_INTERVAL=1` was the dominant source of multi-second broadcast latency. `set_power_profile()` invalidates by setting `_cached_profile = ""` (clearing the *value*, not `_cached_profile_at`) to force a fresh read after a profile change — preserve that if you touch this code; see the next section for why the timestamp-only version is broken.
 
 - **Don't batch `parse_data()`'s 9 `ctrl.get_*()` Modbus calls into bulk `retriable_read_registers()` reads without verifying byte order first.** This was tried (to cut round trips for latency) and reverted — `BYTEORDER_LITTLE_SWAP`'s exact 32-bit byte arrangement for `PVPower`/`BattChargePower`/`LoadPower`/`BattOverallCurrent` isn't derivable from the public `epevermodbus` driver alone, and a guessed formula produced grossly wrong readings (correctness regression, not a crash). If you revisit this: read minimalmodbus's actual `_bytestring_to_long`/`BYTEORDER_LITTLE_SWAP` source from the installed package (`.venv/lib/python3.9/site-packages/minimalmodbus.py`) and validate decoded values against `epevermodbus --portname /dev/ttyACM0 --slaveaddress 1` CLI output before trusting them. See `docs/DEVELOPMENT_HISTORY.md` Session 12.
 
 ---
 
+## Controller I/O Gotchas (Parameters/Energy tabs)
+
+These exist because of a breaking bug that has already happened once (the whole server froze and required a manual restart) — read before touching `hardware.py`'s controller functions or adding a new one.
+
+- **Every function that touches `config.CONTROLLER` must hold `hardware._controller_lock` for its entire body.** The Epever controller is one RS-485/Modbus device on one serial port; `minimalmodbus`/`pyserial` are not thread-safe for concurrent calls on the same instrument. Without the lock, `parse_data()` (every `READ_INTERVAL` tick) and any Parameters/Energy-tab request could write to the port at the same instant, corrupting the conversation — observed symptom was the entire `polling_loop` hanging and `solar_data` broadcasts stopping, requiring a service restart to recover (a per-call 1s read timeout exists but doesn't protect against this — it bounds one clean request, not a corrupted half-duplex adapter state). If you add a new controller-touching function, wrap its body in `with _controller_lock:` like the existing ones.
+
+- **`read_controller_params()`/`read_controller_stats()`/`read_controller_status()` are cached** (60s/30s/15s TTLs — `_params_cache`/`_stats_cache`/`_status_cache` + matching `_at` timestamps). Without this, every admin-panel page reload re-ran 9–12 fresh Modbus reads. `apply_controller_params()` and `sync_rtc()` write through by clearing the relevant cache dict immediately after a successful write.
+
+- **Invalidate a cache by clearing the value, never by resetting only the timestamp.** `_params_cache = {}` is correct; `_params_cache_at = 0.0` alone is **not** — `time.monotonic()` can start near 0 at process startup on some platforms, so `(now - 0.0) < TTL` can still be true within the first TTL seconds of uptime, silently serving stale data right after a write. This bit both the new controller caches and the pre-existing `check_power_profile()` pattern they were modeled on; both are now fixed to clear the cached value itself. Reproduce the bug with a unit test before "fixing" cache invalidation any other way — it passes most manual smoke tests since the window is only the first TTL seconds of process uptime.
+
+- **`ControllerParamsUpdate` (`auth.py`) is the only thing standing between an authenticated write and the physical battery hardware.** `apply_controller_params()`, the `epevermodbus` driver, and `minimalmodbus` enforce no battery-safety bounds at all — only a generic 16-bit register width. If you add a new writable controller field, add real `Field(ge=…, le=…)` bounds (or a `field_validator` for dict-shaped fields like `voltage_controls`) to the Pydantic model — don't rely on the frontend's `min`/`max` HTML attributes, which are a UX convenience only and don't run when the API is called directly.
+
+---
+
 ## Known Issues to Fix (Priority Order)
 
-### Medium
-- **BUG-002** — No index on `solardata.Timestamp`. Date-range queries do full table scans above ~5M rows. Fix: `CREATE INDEX IF NOT EXISTS idx_solardata_ts ON solardata(Timestamp);` in `check_db()`.
+### Resolved
+- **BUG-002** — No index on `solardata.Timestamp`. Fixed: `check_db()` now creates `idx_solardata_timestamp`, backfilling existing databases.
 
 ### Low
 - **BUG-001** — SQLite concurrent write contention. Add `PRAGMA journal_mode=WAL` after opening `DB_CONNECTION` in `check_db()`.
@@ -313,11 +327,10 @@ These exist because of bugs that have already happened once — read before touc
 1. **Alert thresholds** — Notify (email/webhook) when battery below X%, temperature above Y°C, etc.
 2. **Multi-controller support** — Currently exactly one controller.
 3. **WAL mode for SQLite** — See BUG-001.
-4. **Timestamp index** — See BUG-002.
-5. **Data pruning / retention policy** — The telemetry DB grows unbounded. A configurable rolling window would be useful.
-6. **Dark/light theme toggle** — Currently hardcoded dark theme.
-7. **Multiple admin users** — Currently one hardcoded username/password.
-8. **Grafana / InfluxDB export** — Line-protocol endpoint for external dashboards.
+4. **Data pruning / retention policy** — The telemetry DB grows unbounded. A configurable rolling window would be useful.
+5. **Dark/light theme toggle** — Currently hardcoded dark theme.
+6. **Multiple admin users** — Currently one hardcoded username/password.
+7. **Grafana / InfluxDB export** — Line-protocol endpoint for external dashboards.
 
 ---
 

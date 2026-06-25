@@ -404,6 +404,52 @@ As a further latency reduction, `parse_data()`'s 9 individual `ctrl.get_*()` cal
 
 ---
 
+## Session 13 — Admin Panel Bug Fixes: History Speed, Controller Freeze, Caching, Param Validation
+
+Triggered by the operator reporting three admin-panel problems in one go, plus a follow-up question about whether controller parameter writes had any safety bounds.
+
+### Bug 1 — History tab slow to load/refresh on large databases
+
+**Operator's framing:** "If the screen is only going to show 100 entries... then only that number of rows should be pulled at once."
+
+**Investigation:** `query_history()`'s `LIMIT`/`OFFSET` row fetch was already correctly bounded — it was not the cause. The actual cost was `SELECT COUNT(*) FROM solardata WHERE Timestamp >= ? AND Timestamp <= ?` (needed for "Showing X–Y of N" and Next-button gating) doing a full table scan on every page load and filter change, because `solardata.Timestamp` had no index — this was already tracked as BUG-002 in `docs/SECURITY.md`, just not yet fixed.
+
+**Fix (`db.py`):** `check_db()` now creates `idx_solardata_timestamp`, placed outside the `create_table` guard so it backfills on existing databases on next startup, not just fresh installs.
+
+**Verified:** synthetic 200k-row no-index database — index creation ~0.4s one-time, a filtered query that would have scanned the whole table dropped to ~14ms.
+
+### Bug 2 — Parameters tab freezing the entire server, requiring a restart
+
+**Operator's framing:** "the whole thing freezes, it also stops reading and broadcasting solar data, I have to restart the service. This is a breaking bug."
+
+**Investigation:** every controller-touching route (`parse_data`, `read_controller_params/stats/status`, `apply_controller_params`, `sync_rtc`) independently called `loop.run_in_executor(None, ...)` with no coordination, all hitting the same physical RS-485 serial port. Confirmed via the installed `epevermodbus`/`minimalmodbus` source that the driver sets a 1-second `pyserial` read timeout per call but provides no thread-safety guarantee across concurrent calls on one instrument — two threads writing to the port simultaneously corrupt the conversation at the protocol/hardware level, and the resulting bad half-duplex adapter state doesn't recover via a simple timeout.
+
+**Fix (`hardware.py`):** added `_controller_lock` (`threading.Lock`), held for the full body of every function that touches `config.CONTROLLER`. Also added `sync_rtc()` (moved out of a raw `lambda: config.CONTROLLER.set_rtc(...)` in `sunblock.py`'s route handler) so the RTC-sync write is lock-protected like everything else.
+
+**Verified:** a fake controller with a sleep-based, collision-detecting `_slow()` helper, hammered by 6 threads (parse_data ×2, forced params reads ×2, forced stats reads ×2, sync_rtc ×2, apply_controller_params ×2) simultaneously — 960+ calls, zero collisions, zero errors.
+
+### Bug 3 — No caching; every page reload re-fetches params/stats/graphs from scratch
+
+**Operator's framing:** "there is no caching so every time the front-end reloads it becomes a whole thing to fetch it all again."
+
+**Fix (`hardware.py`):** added TTL caches mirroring the pre-existing `check_power_profile()` pattern — `read_controller_params()` (60s), `read_controller_stats()` (30s), `read_controller_status()` (15s). `apply_controller_params()` and `sync_rtc()` write through by clearing the relevant cache immediately after a successful write, so a save/sync is reflected without waiting out the TTL. The live rolling charts and Socket.IO stream weren't touched — they're inherently real-time — and the Visualize tab's historical queries benefit from Bug 1's index instead of needing a separate cache.
+
+**Self-caught bug, fixed before shipping:** the first version invalidated caches via `_params_cache_at = 0.0`, copying the existing `check_power_profile()`/`set_power_profile()` pattern. A unit test caught that this is broken: `time.monotonic()` can start near 0 at process startup, so `(now - 0.0) < TTL` can still be true within the first TTL seconds of uptime — silently serving stale data immediately after a write. Fixed by clearing the cached *value* itself (`_params_cache = {}` / `_cached_profile = ""`) instead of just its timestamp, in both the new caches and the pre-existing `check_power_profile()` pattern they were modeled on (which had the identical latent bug).
+
+**Verified:** unit tests directly exercising read → read → write → read → read sequences, confirming exactly the expected number of real controller calls at each step (cached calls don't touch the fake controller at all; the read immediately after a write always does).
+
+### Follow-up — are there guardrails on controller parameter writes?
+
+The operator asked this directly after the three fixes above. Answer at the time: no, anywhere — `ControllerParamsUpdate` had no `Field` bounds, `apply_controller_params()` passed values straight through, `epevermodbus`/`minimalmodbus` only enforce the generic 16-bit register width (confirmed by reading both libraries' installed source), and the only existing check was a client-side `min="1"` HTML attribute on `battery_capacity` — bypassable by calling the API directly.
+
+**Fix (`auth.py`):** `ControllerParamsUpdate` now has `Field(ge=..., le=...)` bounds on `battery_capacity` (1–10,000 Ah) and `temperature_compensation_coefficient` (0–9 mV/°C/2V), plus a `field_validator` on `voltage_controls` rejecting unknown register keys (checked against `epevermodbus`'s actual `battery_voltage_control_register_names`), non-numeric values, anything outside 8–17V (a deliberately broad, chemistry-independent envelope — the deployment is confirmed 12V via `simulator.py`'s real-data `BattVoltage` baseline of 11.5–14.8V, not a precision-tuned bound per threshold since the exact datasheet thresholds for this specific battery weren't available to verify), and two cross-field orderings that are unambiguous regardless of battery chemistry (`over_voltage_disconnect_voltage >= over_voltage_reconnect_voltage`, `low_voltage_reconnect_voltage >= low_voltage_disconnect_voltage`) — checked only when both sides of a pair are present in the same request.
+
+**Bonus fix (`sunblock.py`):** added a `RequestValidationError` handler (the import for it was already present, unused) that flattens FastAPI's default `detail`-as-a-list-of-dicts into a single string — without it, the new validation errors (and every other Pydantic validation error in the app) would have rendered as `"[object Object]"` in the admin panel's error banners, which just do `err.detail || 'Failed.'`.
+
+**Verified:** 17 unit-test cases covering every bound, the ordering checks, type checks, and unknown-key rejection; an end-to-end `TestClient` run against the real app (with a fake `config.CONTROLLER`) confirming the original 99V-over-voltage scenario is rejected with a clean message, and that a valid `battery_capacity` update still succeeds with write-through caching intact.
+
+---
+
 ## Summary of All API Endpoints (current)
 
 | Method | Path | Auth | Description |

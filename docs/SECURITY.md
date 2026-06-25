@@ -214,6 +214,7 @@ Additional validation in handlers:
 - Settings keys for reset: validated against a whitelist (`_restorable` set)
 - Visualize `sample`: 1–3600 (prevents trivial DoS via tiny step values)
 - Visualize `smooth`: 0–300
+- Controller parameters (`ControllerParamsUpdate`): `battery_capacity` 1–10,000 Ah, `temperature_compensation_coefficient` 0–9 mV/°C/2V, `voltage_controls` register-name allowlist + 8–17V range + two cross-field orderings — see SEC-008 below
 
 ### `data_directory` path manipulation protection
 
@@ -428,6 +429,16 @@ chmod 600 /opt/sunblock/data/sunblock_settings.db
 
 ---
 
+### SEC-008 — No range/ordering validation on controller parameter writes *(Resolved)*
+
+**Description:** `PUT /api/controller/parameters` had authentication and authorization (session/token + real-hardware checks), but nothing gated *what values* an authorized caller could write. `ControllerParamsUpdate` had no range constraints, `apply_controller_params()` passed values straight to the `epevermodbus` driver, and neither the driver nor `minimalmodbus` enforce anything battery-safe — only that the scaled value fits in the underlying 16-bit register (0–65535). The only check anywhere was a client-side `min="1"` HTML attribute on `battery_capacity`, trivially bypassed by calling the API directly. Concretely: `PUT /api/controller/parameters {"voltage_controls": {"over_voltage_disconnect_voltage": 99.0}}` would have written straight to the controller on this 12V system.
+
+**Fix:** `ControllerParamsUpdate` (`auth.py`) now enforces `battery_capacity` (1–10,000 Ah), `temperature_compensation_coefficient` (0–9 mV/°C/2V), and a `field_validator` on `voltage_controls` rejecting unknown register keys, non-numeric values, anything outside an 8–17V safety envelope, and two cross-field orderings (`over_voltage_disconnect_voltage >= over_voltage_reconnect_voltage`, `low_voltage_reconnect_voltage >= low_voltage_disconnect_voltage`) when both sides of a pair are present in the same request. A `RequestValidationError` handler in `sunblock.py` flattens the error response into a single readable string for the admin panel's error banners. See Decision 13 in `docs/ARCHITECTURE.md` §10 for why the bounds are deliberately broad rather than datasheet-precise.
+
+**Status:** Fixed. Verified with 17 unit-test cases and an end-to-end `TestClient` run confirming the 99V scenario above is now rejected with a clean error message, and that valid updates still succeed.
+
+---
+
 ## 11. Known Bugs & Limitations
 
 ### BUG-001 — SQLite concurrent write contention under high DATA_MAN load *(Low)*
@@ -442,15 +453,17 @@ config.DB_CONNECTION.execute("PRAGMA journal_mode=WAL")
 
 ---
 
-### BUG-002 — No index on `solardata.Timestamp` *(Medium for large datasets)*
+### BUG-002 — No index on `solardata.Timestamp` *(Resolved)*
 
-**Description:** Date-range queries perform a full table scan. Above ~10M rows this becomes perceptibly slow.
+**Description:** Date-range queries (and `query_history()`'s `COUNT(*)`) performed a full table scan. Above ~10M rows this became perceptibly slow — the operator specifically reported the History tab "takes a long time to load or refresh."
 
 **Fix:**
 ```sql
-CREATE INDEX IF NOT EXISTS idx_solardata_ts ON solardata(Timestamp);
+CREATE INDEX IF NOT EXISTS idx_solardata_timestamp ON solardata(Timestamp);
 ```
-**Status:** Not fixed. Acceptable at current data volumes.
+Created in `check_db()` outside the table-creation guard, so it backfills existing databases on next startup rather than only applying to fresh installs.
+
+**Status:** Fixed. Verified against a synthetic 200k-row no-index database: index creation took ~0.4s one-time, and a filtered query that would have scanned the whole table dropped to ~14ms.
 
 ---
 
@@ -460,6 +473,16 @@ CREATE INDEX IF NOT EXISTS idx_solardata_ts ON solardata(Timestamp);
 
 **Fix:** Replace with `asyncio.Event`.  
 **Status:** Not fixed. Safe under CPython.
+
+---
+
+### BUG-004 — Concurrent controller I/O could corrupt the RS-485 conversation and freeze the server *(Resolved — was High)*
+
+**Description:** Every controller-touching route (`parse_data`, `read_controller_params/stats/status`, `apply_controller_params`, `sync_rtc`) ran independently on the shared default `ThreadPoolExecutor` with no mutual exclusion, all accessing the same physical serial port. `minimalmodbus`/`pyserial` are not thread-safe for concurrent calls on one instrument — two threads writing to the port simultaneously corrupt the Modbus conversation at the protocol/hardware level. The operator reported that opening the Parameters tab froze the entire server: `solar_data` broadcasts stopped and the service had to be manually restarted to recover. The per-call 1-second `pyserial` read timeout did not protect against this, because the failure mode was the USB-serial adapter being left in a corrupted half-duplex state, not a clean request simply taking too long.
+
+**Fix:** `hardware._controller_lock` (`threading.Lock`) is now held for the full body of every function that touches `config.CONTROLLER`, serializing all controller I/O regardless of which thread/request triggered it.
+
+**Status:** Fixed. Stress-tested with a fake controller that detects concurrent access: 960+ calls from 6 threads hammering every controller-touching function simultaneously produced zero collisions. See Decision 11 in `docs/ARCHITECTURE.md` §10.
 
 ---
 

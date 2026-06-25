@@ -196,6 +196,7 @@ GET /api/data/history?limit=100&offset=0&from=2025-05-11&to=2025-05-29
 | FastAPI request handlers | asyncio coroutines on event loop | Non-blocking; blocking ops use `run_in_executor` |
 | `polling_loop` | asyncio Task on same loop | Runs every `READ_INTERVAL` seconds |
 | Hardware I/O (`parse_data`, `write_db`) | ThreadPoolExecutor worker | Modbus and SQLite writes are blocking |
+| Controller param/stats/status reads + writes | ThreadPoolExecutor worker, serialized via `hardware._controller_lock` | See "Controller I/O serialization" below |
 | History queries (`query_history`) | ThreadPoolExecutor worker | Own connection — never shares write cursor |
 | Socket.IO emit | async, same event loop | `await sio.emit(…)` |
 
@@ -206,6 +207,18 @@ SQLite and `epevermodbus` are synchronous blocking calls. Running them directly 
 ### Write cursor vs read connections
 
 The polling loop holds a persistent `DB_CURSOR` (opened once in `check_db()`) for writes. History queries open and close a **separate** connection per request. This avoids cursor state corruption and works around SQLite's default single-writer semantics without requiring WAL mode.
+
+### Controller I/O serialization (`hardware._controller_lock`)
+
+`run_in_executor(None, ...)` submits to FastAPI's default `ThreadPoolExecutor`, which has many worker threads — so without explicit coordination, `parse_data()` (called every tick by `polling_loop`) and any of the Parameters/Energy-tab routes (`read_controller_params`, `read_controller_stats`, `read_controller_status`, `apply_controller_params`, `sync_rtc`) could all be talking to the controller from different threads at the same instant. The Epever controller is a single RS-485/Modbus RTU device on one serial port, and `minimalmodbus`/`pyserial` are **not** thread-safe for concurrent calls on the same instrument — two threads writing to the port at once interleave request bytes on the wire. Each individual `get_*()`/`set_*()` call has a 1-second read timeout (set in `EpeverChargeController.__init__`), but a corrupted RS-485 conversation can leave the USB-serial adapter itself stuck in a bad half-duplex state that doesn't self-recover from a timeout alone — the observed symptom was the entire `polling_loop` hanging and `solar_data` broadcasts stopping until the service was manually restarted (see Decision 11 in §10).
+
+`hardware._controller_lock` (a plain `threading.Lock`) is held for the full body of every function that touches `config.CONTROLLER`, making all controller I/O mutually exclusive regardless of which thread or request triggered it. Because these are synchronous functions running on executor worker threads (not the event loop), blocking on the lock only occupies a worker thread — it never stalls the event loop, so HTTP/WebSocket responsiveness is unaffected even while one controller call waits its turn behind another.
+
+### Controller data caching (`hardware._params_cache` / `_stats_cache` / `_status_cache`)
+
+`read_controller_params()`, `read_controller_stats()`, and `read_controller_status()` each cache their result with a TTL (60s / 30s / 15s respectively), mirroring the pre-existing `check_power_profile()` 30-second cache. Without this, a full page reload of the admin panel triggered 9–12 fresh sequential Modbus reads with no caching at all — every time, for every client. `apply_controller_params()` and `sync_rtc()` write through by clearing the relevant cache (`_params_cache`/`_status_cache`) immediately after a successful write, so a save or RTC sync is reflected without waiting out the TTL.
+
+**Invalidate by clearing the cache value, not by resetting the timestamp.** The first version of this code set `_params_cache_at = 0.0` to force a refresh, modeled on the existing `check_power_profile()`/`set_power_profile()` pattern — but `time.monotonic()` can start near 0 at process startup on some platforms, so `(now - 0.0) < TTL` can still be true within the first TTL seconds of uptime, silently serving stale data right after a write. Both the new caches and the pre-existing power-profile cache were fixed to invalidate by clearing the cached value itself (`_params_cache = {}` / `_cached_profile = ""`), which is unambiguously falsy regardless of timing (see Decision 12 in §10).
 
 ---
 
@@ -231,6 +244,8 @@ CREATE TABLE solardata (
 ```
 
 No primary key — rows are append-only. Timestamps are ISO strings (`YYYY-MM-DD HH:MM:SS`) stored as TEXT; SQLite's lexicographic sort on ISO dates makes date-range queries correct without a dedicated datetime column.
+
+`check_db()` also creates `idx_solardata_timestamp` (`CREATE INDEX IF NOT EXISTS ... ON solardata(Timestamp)`), outside the table-creation guard so it backfills on databases created before this index existed. Without it, `query_history()`'s `SELECT COUNT(*) ... WHERE Timestamp >= ? AND Timestamp <= ?` and its `ORDER BY Timestamp ... LIMIT ? OFFSET ?` both did a full table scan — the dominant cost on large databases, since the `LIMIT`/`OFFSET` row fetch itself was already correctly bounded (formerly tracked as BUG-002, now resolved — see `docs/SECURITY.md` §11 and Decision 10 in §10).
 
 ### `sunblock_settings.db` — runtime configuration
 
@@ -405,6 +420,18 @@ That inline script has since been extracted to `public/js/sunblock.js` (a same-o
 | Configuration writes | Yes (cookie or API token) | `PATCH /api/settings` |
 | Hardware writes | Yes (cookie or API token) + real controller | `PUT /api/controller/parameters`, `POST /api/performance-mode` |
 | Account / token management | **Session cookie only** — bearer tokens rejected | `POST /api/settings/password`, `POST/GET/DELETE /api/tokens` |
+
+### Controller parameter validation
+
+Authentication and authorization gate *who* can call `PUT /api/controller/parameters`, but until this was fixed, nothing gated *what values* could be written once authorized — `ControllerParamsUpdate` had no range constraints, `apply_controller_params()` passed values straight to the `epevermodbus` driver, and the driver/`minimalmodbus` only enforce that a value fits in the underlying 16-bit register (0–65535 after scaling) — not anything battery-safe. The only check anywhere was a client-side `min="1"` HTML attribute on `battery_capacity`, trivially bypassed by calling the API directly.
+
+`ControllerParamsUpdate` (`auth.py`) now enforces real bounds:
+- `battery_capacity`: 1–10,000 Ah
+- `temperature_compensation_coefficient`: 0–9 mV/°C/2V
+- `voltage_controls`: each value must be a known register name (matching `epevermodbus`'s `battery_voltage_control_register_names`) mapped to a number in **8–17V** — a broad, chemistry-independent safety envelope for *any* 12V lead-acid/AGM/gel system (the deployed system is confirmed 12V via `simulator.py`'s real-deployment `BattVoltage` baseline of 11.5–14.8V), not a precision-tuned bound per threshold
+- Two cross-field orderings, checked only when both sides of the pair are present in the same request (the only case the validator can check without a live controller read — see Decision 13 in §10): `over_voltage_disconnect_voltage >= over_voltage_reconnect_voltage`, `low_voltage_reconnect_voltage >= low_voltage_disconnect_voltage`
+
+A `RequestValidationError` handler in `sunblock.py` flattens FastAPI's default `detail` (a list of `{loc, msg, ...}` dicts) into a single readable string, since the admin panel's error banners just render `err.detail` as text.
 
 ### Admin audit log
 
@@ -582,6 +609,30 @@ Six tabs share a single Alpine component instance in admin mode; the public view
 **Chosen**: `parse_data()` only calls `subprocess.run([config.POWER_DRAW_SCRIPT], ...)` when `config.POWER_DRAW_SCRIPT` is truthy, wrapped in `try/except`, defaulting `CPUPowerDraw` to `0.0` (a `float`; previously a `str`).  
 **Rejected**: requiring `POWER_DRAW_SCRIPT_ADDR` to always be set in `.env`.  
 **Rationale**: when `POWER_DRAW_SCRIPT_ADDR` is blank, `config.POWER_DRAW_SCRIPT` is `None`, and `subprocess.run([None], ...)` raises `TypeError` immediately. Because `parse_data()` runs inside `polling_loop`'s `try/except Exception: ... break` (see §2), this exception was fatal on the very first tick — it silently stopped the polling loop, and therefore **all** `solar_data` socket broadcasts, with no symptom other than "the server runs but isn't broadcasting any events." Making `CPUPowerDraw` optional lets the server run correctly with or without the optional power-draw script, and the `float` type now matches the `REAL` column in `solardata`.
+
+### Decision 10: Index `solardata.Timestamp`
+
+**Chosen**: `CREATE INDEX IF NOT EXISTS idx_solardata_timestamp ON solardata(Timestamp)` in `check_db()`, outside the `create_table` guard so it backfills existing databases.  
+**Rejected**: leaving it unindexed (the status quo — previously tracked as BUG-002, "acceptable at current data volumes").  
+**Rationale**: the operator reported the History tab "takes a long time to load or refresh" on large databases, and assumed the `LIMIT`/`OFFSET` row fetch itself was pulling too much data. It wasn't — `query_history()`'s row fetch was already correctly bounded. The actual cost was `SELECT COUNT(*) ... WHERE Timestamp >= ? AND Timestamp <= ?` (needed for the "Showing X–Y of N" UI and Next-button gating) doing a full table scan on every page load and filter change, since there was no index to satisfy the `WHERE` predicate or the `ORDER BY Timestamp`. Verified against a synthetic 200k-row no-index database: index creation took ~0.4s one-time, and a filtered query that would have scanned the whole table dropped to ~14ms.
+
+### Decision 11: Serialize all controller I/O through a single `threading.Lock`
+
+**Chosen**: `hardware._controller_lock`, held for the full body of every function that calls `config.CONTROLLER.*` — `parse_data`, `read_controller_params/stats/status`, `apply_controller_params`, `sync_rtc`.  
+**Rejected**: relying on each individual Modbus call's existing 1-second `pyserial` read timeout to bound worst-case latency, with no cross-call coordination (the status quo).  
+**Rationale**: the operator reported that opening the Parameters tab would freeze the entire server — `solar_data` stopped broadcasting and the service had to be restarted. Root cause: every controller-touching route ran independently on the shared default `ThreadPoolExecutor`, with no mutual exclusion, all hitting the same physical RS-485 serial port. `minimalmodbus`/`pyserial` are not thread-safe for concurrent calls on one instrument; two threads writing to the port simultaneously corrupt the conversation at the protocol/hardware level. The per-call 1-second timeout bounds a single *clean* request-response cycle, but it does not protect against the underlying USB-serial adapter being left in a corrupted half-duplex state by concurrent access — which doesn't time out, it just doesn't respond correctly again until the port is reopened (a service restart). A lock makes the actual constraint (this is a half-duplex, single-conversation-at-a-time medium) explicit in code rather than relying on luck/low concurrency to avoid triggering it. Stress-tested with a fake controller that detects concurrent access: 960+ calls from 6 threads hammering every controller-touching function simultaneously produced zero collisions.
+
+### Decision 12: TTL-cache controller params/stats/status; invalidate by clearing the value, not the timestamp
+
+**Chosen**: 60s/30s/15s TTL caches for `read_controller_params/stats/status`, write-through invalidated by `apply_controller_params()`/`sync_rtc()` clearing the relevant cache dict (`_params_cache = {}`, not `_params_cache_at = 0.0`).  
+**Rejected**: no caching at all (the status quo — every admin-panel page reload re-ran 9–12 fresh Modbus reads); invalidating via `_cache_at = 0.0` (the first version of this fix, modeled on the pre-existing `check_power_profile()` pattern).  
+**Rationale**: the operator reported that params/stats/graphs are "client-side only" with no caching, making every reload "a whole thing to fetch it all again." TTL caching (mirroring the existing power-profile cache) cuts this to near-zero for repeat loads within the TTL window, and as a side benefit reduces contention on the new controller lock from Decision 11. The `_cache_at = 0.0` invalidation approach was caught as broken by its own unit test: `time.monotonic()` can start near 0 at process startup, so `(now - 0.0) < TTL` can still be true within the first TTL seconds of uptime — silently serving stale data immediately after a write. Clearing the cached value itself is unambiguously falsy regardless of process uptime. The same latent bug was found and fixed in the pre-existing `check_power_profile()`/`set_power_profile()` pair this pattern was copied from.
+
+### Decision 13: Real range/ordering validation on controller parameter writes
+
+**Chosen**: `Field(ge=…, le=…)` bounds on `battery_capacity`/`temperature_compensation_coefficient`, and a `field_validator` on `voltage_controls` checking register-name allowlist membership, numeric type, an 8–17V range, and two cross-field orderings (disconnect ≥ its matching reconnect point) — all in `ControllerParamsUpdate` (`auth.py`), the one layer that can't be bypassed by calling the API directly.  
+**Rejected**: per-field datasheet-precise bounds and a full 12-way cross-field ordering check.  
+**Rationale**: before this fix, nothing — not the Pydantic model, not `apply_controller_params()`, not the `epevermodbus` driver, not `minimalmodbus` (which only enforces the generic 16-bit register width, 0–65535) — stopped a value like `over_voltage_disconnect_voltage: 99.0` from being written straight to the controller. The only existing check was a client-side `min="1"` HTML attribute, trivially bypassed. Full per-field precision tuning was rejected because it requires datasheet-level certainty about the specific Tracer-AN model's recommended thresholds, which wasn't available to verify — guessing wrong there risks rejecting genuinely valid configurations. The bounds implemented are a deliberately broad, chemistry-independent outer safety net (the 8–17V range is justified by the confirmed-12V deployment — see the real `BattVoltage` baseline in §8 "Simulator Architecture") plus only the two orderings that are true for *any* charge controller regardless of battery chemistry — not a claim of complete coverage.
 
 ---
 
