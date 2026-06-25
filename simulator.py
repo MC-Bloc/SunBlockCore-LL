@@ -85,9 +85,9 @@ class _SimState:
             "BattVoltage":        round(max(11.5, min(14.8, bv)), 3),
             "BattTemperature":    round(25.0 + random.gauss(0, 0.8), 1),
             "BattChargePower":    round(max(0.0, bcp), 2),
-            "BattOverallCurrent": round(boc, 3),
-            "BattPercentage":     int(round(max(0, min(100, soc)))),
             "LoadPower":          round(max(0.0, load), 2),
+            "BattPercentage":     int(round(max(0, min(100, soc)))),
+            "BattOverallCurrent": round(boc, 3),
             "CPUPowerDraw":       round(max(0.3, cpu), 3),
             "PowerProfile":       "power-saver",
         }
