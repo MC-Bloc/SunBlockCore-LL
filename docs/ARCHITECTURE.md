@@ -308,6 +308,8 @@ Lives in the same `sunblock_settings.db` rather than a dedicated database file o
 
 Both files fall back to stderr when `DATA_DIRECTORY` is not yet configured.
 
+Viewable from the admin panel's Logs tab (`GET /api/logs?type=app|audit&lines=N`) without shell access to the host, via `db.read_log_file()`. It tails the last `lines` (1–2000, default 200) by reading from the end of the file in growing chunks (`db._tail_lines()`) rather than loading the whole file — both logs have no rotation/retention policy and grow unbounded for as long as the service runs.
+
 ### Visualize query pipeline (`query_visualize`)
 
 Matches the `SunBlock_DataProcessing.ipynb` notebook:
@@ -409,13 +411,14 @@ That inline script has since been extracted to `public/js/sunblock.js` (a same-o
 | `GET /api/data/history` | 60 / minute per IP |
 | `GET /api/data/visualize/fields` | 60 / minute per IP |
 | `GET /api/data/visualize` | 20 / minute per IP |
+| `GET /api/logs` | 60 / minute per IP |
 
 ### Endpoint access model
 
 | Category | Auth required | Examples |
 |---|---|---|
 | Public live view | No | `GET /api/data`, `GET /` |
-| Historical / analysis data | Yes (cookie or API token) | `GET /api/data/history`, `GET /api/data/visualize` |
+| Historical / analysis data | Yes (cookie or API token) | `GET /api/data/history`, `GET /api/data/visualize`, `GET /api/logs` |
 | Exports | Yes (cookie or API token) | `GET /api/data/download/*` |
 | Configuration writes | Yes (cookie or API token) | `PATCH /api/settings` |
 | Hardware writes | Yes (cookie or API token) + real controller | `PUT /api/controller/parameters`, `POST /api/performance-mode` |
@@ -633,6 +636,18 @@ Six tabs share a single Alpine component instance in admin mode; the public view
 **Chosen**: `Field(ge=…, le=…)` bounds on `battery_capacity`/`temperature_compensation_coefficient`, and a `field_validator` on `voltage_controls` checking register-name allowlist membership, numeric type, an 8–17V range, and two cross-field orderings (disconnect ≥ its matching reconnect point) — all in `ControllerParamsUpdate` (`auth.py`), the one layer that can't be bypassed by calling the API directly.  
 **Rejected**: per-field datasheet-precise bounds and a full 12-way cross-field ordering check.  
 **Rationale**: before this fix, nothing — not the Pydantic model, not `apply_controller_params()`, not the `epevermodbus` driver, not `minimalmodbus` (which only enforces the generic 16-bit register width, 0–65535) — stopped a value like `over_voltage_disconnect_voltage: 99.0` from being written straight to the controller. The only existing check was a client-side `min="1"` HTML attribute, trivially bypassed. Full per-field precision tuning was rejected because it requires datasheet-level certainty about the specific Tracer-AN model's recommended thresholds, which wasn't available to verify — guessing wrong there risks rejecting genuinely valid configurations. The bounds implemented are a deliberately broad, chemistry-independent outer safety net (the 8–17V range is justified by the confirmed-12V deployment — see the real `BattVoltage` baseline in §8 "Simulator Architecture") plus only the two orderings that are true for *any* charge controller regardless of battery chemistry — not a claim of complete coverage.
+
+### Decision 14: Create `DATA_DIRECTORY` at the very top of `lifespan()`, before anything else runs
+
+**Chosen**: `os.makedirs(config.DATA_DIRECTORY, exist_ok=True)` as the first statement in `lifespan()`, ahead of `load_settings()` and the first `sunblock_log()` call.  
+**Rejected**: the previous ordering — `load_settings()` and a log line first, makedirs second (the status quo this replaces).  
+**Rationale**: `SETTINGS_DB_NAME` and `POWER_LOGS_FILE` both default to paths *inside* `DATA_DIRECTORY` (see §11 "Configuration Priority Chain"), and neither `sqlite3.connect()` nor `open(path, "a")` create missing parent directories. On a fresh deploy where `DATA_DIRECTORY` is set in `.env` but the directory doesn't exist on disk yet, `load_settings()`'s first `sqlite3.connect(config.SETTINGS_DB_NAME)` raised `sqlite3.OperationalError: unable to open database file` — uncaught, inside `lifespan()`, which crashed the entire ASGI app at startup with no recovery path short of manually creating the directory. Reproduced directly: `TestClient(app).__enter__()` raised the same exception. Moving the directory creation first means every later access to a `DATA_DIRECTORY`-derived path is guaranteed to have a directory to land in.
+
+### Decision 15: Make every settings-DB connection self-sufficient, not just startup
+
+**Chosen**: a shared `db._connect_settings_db()` helper that runs `os.makedirs(os.path.dirname(config.SETTINGS_DB_NAME), exist_ok=True)` immediately before every `sqlite3.connect(config.SETTINGS_DB_NAME)` call, used by `_settings_conn()`, `_tokens_conn()`, and `_backup_codes_conn()` alike.  
+**Rejected**: only fixing Decision 14's `DATA_DIRECTORY` case and leaving the three `_*_conn()` functions connecting directly.  
+**Rationale**: Decision 14 only protects the *default* derivation of `SETTINGS_DB_NAME` (inside `DATA_DIRECTORY`). `SETTINGS_DB_NAME` can also be set directly via the `SETTINGS_DB` env override to point anywhere — and that path is independent of `DATA_DIRECTORY` entirely, so Decision 14's fix doesn't cover it. Reproduced directly: setting `SETTINGS_DB=/some/missing/dir/settings.db` crashed identically at the same `_settings_conn()` call site. Since all three connection helpers share the exact same `sqlite3.connect(config.SETTINGS_DB_NAME)` call, fixing it once in a shared helper (rather than three near-duplicate `os.makedirs` calls) makes future `_*_conn()` additions safe by default rather than by remembering to copy a guard.
 
 ---
 

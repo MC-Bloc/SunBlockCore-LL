@@ -450,6 +450,34 @@ The operator asked this directly after the three fixes above. Answer at the time
 
 ---
 
+## Session 14 — Logs Tab + Startup Crash on Missing `DATA_DIRECTORY`
+
+Triggered by two requests in one message: (1) a Logs tab in the admin panel with separate panes for the application log and the admin audit log, and (2) a hunch that directory creation was missing somewhere for one of the data files.
+
+### Feature — Logs tab
+
+**Fix (`db.py`):** added `db._tail_lines(path, n)`, which reads a text file from the end in growing chunks rather than loading the whole thing — both `SunBlockCoreLogs.txt` and `SunBlockAdminAudit.txt` have no rotation/retention policy and grow unbounded for as long as the service runs, so a naive `readlines()` would re-read an ever-larger file on every tab refresh. `db.read_log_file(log_type, lines)` wraps it for `"app"` and `"audit"`, returning `{"lines": [...], "available": bool}` — `available=False` is a normal state (not an error) when `DATA_DIRECTORY` isn't configured yet or the file hasn't been written to.
+
+**Fix (`sunblock.py`):** new `GET /api/logs?type=app|audit&lines=N` (auth via `verify_session_or_token`, rate-limited 60/min like the History endpoint, `lines` clamped server-side to 1–2000).
+
+**Fix (`templates/admin.html`, `public/js/sunblock.js`, `public/css/index.css`):** new "Logs" tab, two side-by-side panes (single column under 900px) — Application Log and Admin Audit Log — each with its own refresh button, plus a shared line-count selector (100/200/500/1000). `switchTab('logs')` loads both panes immediately, mirroring the `loadParams`/`loadStats` pattern used by other tabs.
+
+**Verified:** unit tests on `_tail_lines()` (exact tail of a 10k-line file, tail larger than the file, empty file, nonexistent file); `TestClient` calls to `/api/logs` for both types, a bad `type` value (400), and an oversized `lines` request (clamped, no error); a live browser pass through the actual rendered tab (login → switch to Logs → both panes populated with real content, refresh button works, no console errors, mobile-width layout collapses to one column correctly).
+
+### Bug — server crash at startup when `DATA_DIRECTORY` doesn't exist yet
+
+**Investigation:** reproduced directly. With `DATA_DIRECTORY` set to a path that doesn't exist on disk, `TestClient(app).__enter__()` raised `sqlite3.OperationalError: unable to open database file` from inside `lifespan()`, at `load_settings()`'s first `_settings_conn()` call. Root cause: `SETTINGS_DB_NAME` and `POWER_LOGS_FILE` both default to paths *inside* `DATA_DIRECTORY`, but `lifespan()` called `load_settings()` and a `sunblock_log()` line *before* its own `os.makedirs(config.DATA_DIRECTORY, ...)` call — and neither `sqlite3.connect()` nor `open(path, "a")` create missing parent directories. This is a real failure mode for a fresh deploy, not just a contrived test case: setting `DATA_DIRECTORY` in `.env` ahead of the very first boot, before the path has ever been created, is the normal way to configure it.
+
+**Fix (`sunblock.py`):** moved the `os.makedirs(config.DATA_DIRECTORY, exist_ok=True)` call to the very first line of `lifespan()`, ahead of `load_settings()` and the first log line.
+
+**Second instance found while verifying the fix:** testing with an explicit `SETTINGS_DB` env override pointing at a different, also-nonexistent directory reproduced the identical crash — independent of `DATA_DIRECTORY` entirely, since `SETTINGS_DB_NAME` can be overridden to point anywhere. `_settings_conn()`, `_tokens_conn()`, and `_backup_codes_conn()` all called `sqlite3.connect(config.SETTINGS_DB_NAME)` directly with no safety net.
+
+**Fix (`db.py`):** added `db._connect_settings_db()`, a shared helper that runs `os.makedirs(os.path.dirname(config.SETTINGS_DB_NAME), exist_ok=True)` immediately before connecting, and pointed all three `_*_conn()` functions at it instead of calling `sqlite3.connect()` directly.
+
+**Verified:** both trigger conditions reproduced and fixed — (1) `DATA_DIRECTORY` set to a non-existent path with no `SETTINGS_DB` override, full `TestClient` startup now succeeds and the directory is populated; (2) `SETTINGS_DB` explicitly overridden to a non-existent directory with no `DATA_DIRECTORY` at all, startup succeeds and a subsequent `PATCH /api/settings` with a third non-existent `data_directory` also succeeds. Regression-checked token creation/listing and 2FA setup still work against the fixed code path.
+
+---
+
 ## Summary of All API Endpoints (current)
 
 | Method | Path | Auth | Description |
@@ -465,6 +493,7 @@ The operator asked this directly after the three fixes above. Answer at the time
 | GET | `/api/data/history` | **Yes** (60/min) | Paginated historical readings |
 | GET | `/api/data/visualize/fields` | **Yes** (60/min) | Plottable field metadata |
 | GET | `/api/data/visualize` | **Yes** (20/min) | Time-series data for Visualize tab |
+| GET | `/api/logs` | **Yes** (60/min) | Tail of app/audit log for the Logs tab |
 | GET | `/api/data/download` | **Yes** | Download as SQLite |
 | GET | `/api/data/download/csv` | **Yes** | Download as CSV |
 | GET | `/api/data/download/xlsx` | **Yes** | Download as Excel |

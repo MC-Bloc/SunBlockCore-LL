@@ -312,6 +312,12 @@ As an **Operator**, I want token management itself (`/api/tokens`) and the passw
 **US-076**  
 As an **Operator**, I want any attempt to write an out-of-range or nonsensical controller parameter (e.g. a voltage threshold far outside what's safe for the battery bank, a negative battery capacity, an unknown register key, or a disconnect/reconnect ordering that doesn't make sense) to be rejected server-side with a clear error message, regardless of whether the request came from the admin panel or a direct API call, so that a mistyped value or a script bug can't silently push the battery hardware into an unsafe configuration.
 
+**US-077**  
+As an **Admin**, I want a Logs tab in the admin panel with separate panes for the application log and the admin audit log, each showing the most recent entries with a refresh button and a configurable line count, so that I can diagnose problems or review activity without needing shell access to the host.
+
+**US-078**  
+As an **Operator**, I want the server to create its data directory on startup before anything tries to read or write a file inside it, so that pointing `DATA_DIRECTORY` (or an explicit `SETTINGS_DB` override) at a path that doesn't exist yet on a fresh deploy doesn't crash the entire application before it can even create that path itself.
+
 ---
 
 ## Acceptance Criteria Summary
@@ -336,3 +342,5 @@ As an **Operator**, I want any attempt to write an out-of-range or nonsensical c
 | US-064 – US-068 (API tokens for external/programmatic access) | Implemented |
 | US-069 – US-075 (Two-factor authentication) | Implemented |
 | US-076 (Controller parameter range/ordering validation) | Implemented |
+| US-077 (Admin panel Logs tab) | Implemented |
+| US-078 (DATA_DIRECTORY created before first use) | Implemented |

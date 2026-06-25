@@ -177,6 +177,7 @@ Socket.IO upgrades from the same HTTP connection. TLS termination at the proxy c
 | `GET /api/data/history` | Historical readings — rate-limited 60 req/min/IP |
 | `GET /api/data/visualize/fields` | Field metadata — rate-limited 60 req/min/IP |
 | `GET /api/data/visualize` | Time-series query — rate-limited 20 req/min/IP |
+| `GET /api/logs` | Tail of application/audit log files (Logs tab) — rate-limited 60 req/min/IP |
 | `GET /api/data/download` | SQLite download |
 | `GET /api/data/download/csv` | CSV export |
 | `GET /api/data/download/xlsx` | XLSX export |
@@ -246,8 +247,9 @@ All rate limits are per-IP, enforced by `slowapi`. Exceeding a limit returns `42
 | `GET /api/data/history` | 60 / minute | Prevents automated scraping / DB hammering |
 | `GET /api/data/visualize/fields` | 60 / minute | Lightweight endpoint; high limit for UX |
 | `GET /api/data/visualize` | 20 / minute | Heavy DB scan (up to 5M rows); lower cap prevents DoS |
+| `GET /api/logs` | 60 / minute | Reads a (potentially large, unrotated) log file from disk per request |
 
-In addition, the visualize query has a hard SQL `LIMIT 5_000_000` cap on rows fetched before Python resampling, preventing OOM on very large databases regardless of the rate limit.
+In addition, the visualize query has a hard SQL `LIMIT 5_000_000` cap on rows fetched before Python resampling, preventing OOM on very large databases regardless of the rate limit. `GET /api/logs` similarly caps `lines` to 2000 server-side regardless of what's requested.
 
 ---
 
@@ -283,7 +285,7 @@ Additional HTTP security headers set on all responses:
 
 ## 8. Admin Audit Logging
 
-Every authenticated write action is appended to `<DATA_DIRECTORY>/SunBlockAdminAudit.txt`. Each line is space-delimited:
+Every authenticated write action is appended to `<DATA_DIRECTORY>/SunBlockAdminAudit.txt`. Viewable from the admin panel's Logs tab (`GET /api/logs?type=audit`) alongside the application log (`type=app`), without needing shell access to the host — see §4 above for the endpoint's auth/rate-limit. Each line is space-delimited:
 
 ```
 2026-06-06 10:30:00  [AUDIT]  LOGIN  user=admin  ip=192.168.1.10
@@ -483,6 +485,16 @@ Created in `check_db()` outside the table-creation guard, so it backfills existi
 **Fix:** `hardware._controller_lock` (`threading.Lock`) is now held for the full body of every function that touches `config.CONTROLLER`, serializing all controller I/O regardless of which thread/request triggered it.
 
 **Status:** Fixed. Stress-tested with a fake controller that detects concurrent access: 960+ calls from 6 threads hammering every controller-touching function simultaneously produced zero collisions. See Decision 11 in `docs/ARCHITECTURE.md` §10.
+
+---
+
+### BUG-005 — Server crashed at startup if `DATA_DIRECTORY` didn't exist on disk yet *(Resolved — was High)*
+
+**Description:** `SETTINGS_DB_NAME` and `POWER_LOGS_FILE` both default to paths inside `DATA_DIRECTORY`, and neither `sqlite3.connect()` nor `open(path, "a")` create missing parent directories. `lifespan()` called `load_settings()` (opens the settings DB) and `sunblock_log()` (opens the app log) before the `os.makedirs(config.DATA_DIRECTORY, ...)` call that was meant to create it. On a fresh deploy where `DATA_DIRECTORY` was set in `.env` but the directory hadn't been created on disk yet, the entire ASGI app failed to start with an uncaught `sqlite3.OperationalError: unable to open database file` — there was no recovery path short of manually creating the directory before the first boot. A second, independent instance of the same bug existed: an explicit `SETTINGS_DB` env override pointing at a non-existent directory crashed identically, regardless of `DATA_DIRECTORY`.
+
+**Fix:** `os.makedirs(config.DATA_DIRECTORY, exist_ok=True)` moved to the first line of `lifespan()`, before any settings/log access. Separately, a shared `db._connect_settings_db()` helper now ensures the parent directory of `SETTINGS_DB_NAME` exists before every connection — used by `_settings_conn()`, `_tokens_conn()`, and `_backup_codes_conn()` — so a `SETTINGS_DB` override pointing anywhere is safe too, not just the default location inside `DATA_DIRECTORY`.
+
+**Status:** Fixed. Reproduced directly with `TestClient(app).__enter__()` against both trigger conditions (unset directory, and a `SETTINGS_DB` override pointing at one) before and after the fix. See Decisions 14–15 in `docs/ARCHITECTURE.md` §10.
 
 ---
 

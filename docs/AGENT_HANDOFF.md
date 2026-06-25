@@ -106,6 +106,8 @@ Code defaults (config.py)
 
 `ENV_DEFAULTS` is a dict defined in `config.py` at module level that captures the `.env` values permanently. The `DELETE /api/settings/{key}` endpoint uses this to restore the live config without restarting.
 
+**`DATA_DIRECTORY` must exist on disk before `load_settings()` or any log write runs.** `SETTINGS_DB_NAME` and `POWER_LOGS_FILE` both default to paths *inside* `DATA_DIRECTORY`, and neither `sqlite3.connect()` nor `open(path, "a")` create missing parent directories — they raise instead. This crashed the entire app at startup once (a fresh deploy with `DATA_DIRECTORY` set in `.env` but not yet created on disk): `lifespan()` called `load_settings()` before its `os.makedirs(config.DATA_DIRECTORY, ...)` call. Fixed by moving the `makedirs` call to the very first line of `lifespan()`. If you add new startup logic that reads/writes a `DATA_DIRECTORY`-derived path, put it after that `makedirs` call, not before. Separately, anything that connects to the settings DB (`_settings_conn()`, `_tokens_conn()`, `_backup_codes_conn()`) goes through `db._connect_settings_db()`, which `makedirs`'s the parent directory on every call — this also covers the case where `SETTINGS_DB` is overridden via env to a path with no relation to `DATA_DIRECTORY` at all. If you add a fourth `_*_conn()` function, route it through `_connect_settings_db()` too rather than calling `sqlite3.connect(config.SETTINGS_DB_NAME)` directly.
+
 ---
 
 ## Database & Log Files
@@ -118,6 +120,8 @@ All files live in `DATA_DIRECTORY` (required — must be set in `.env`, no defau
 | `sunblock_settings.db` | Runtime settings — `settings(key TEXT PK, value TEXT)`, `api_tokens` (hashed bearer tokens for external API access), and `backup_codes` (hashed one-time 2FA recovery codes) |
 | `SunBlockCoreLogs.txt` | Application log (startup, errors, polling events) |
 | `SunBlockAdminAudit.txt` | Admin audit log — every write action with timestamp + IP |
+
+Both log files are viewable from the admin panel's **Logs** tab (`GET /api/logs?type=app|audit&lines=N`) — no shell access to the host required. Each pane independently tails the last N lines (default 200, max 2000) via `db.read_log_file()`/`db._tail_lines()`.
 
 Exception: `sunblock_settings.db` may also live next to the source files before `DATA_DIRECTORY` is configured (see `config.py` for the bootstrapping logic).
 
@@ -167,6 +171,7 @@ CREATE TABLE solardata (
 | GET | `/api/data/history` | **Yes** (60/min) | Paginated history |
 | GET | `/api/data/visualize/fields` | **Yes** (60/min) | Field metadata |
 | GET | `/api/data/visualize` | **Yes** (20/min) | Time-series data for Visualize tab |
+| GET | `/api/logs` | **Yes** (60/min) | Tail of app/audit log (`?type=app\|audit&lines=N`) |
 | GET | `/api/data/download` | **Yes** | SQLite download |
 | GET | `/api/data/download/csv` | **Yes** | CSV export |
 | GET | `/api/data/download/xlsx` | **Yes** | XLSX export |
