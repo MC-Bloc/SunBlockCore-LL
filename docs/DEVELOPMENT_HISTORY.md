@@ -424,9 +424,29 @@ As a further latency reduction, `parse_data()`'s 9 individual `ctrl.get_*()` cal
 - `_read_cpu_power_draw()` — the new `parse_data()` entry point. Computes power as `(current_total_uj - previous_total_uj) / 1_000_000 / (now - previous_time)`, using `time.monotonic()` for the elapsed-time measurement (replacing the old script's assumed fixed ~1-second gap, which makes the new version more accurate regardless of `READ_INTERVAL`). Explicitly guards against a negative energy delta (counter wraparound or reset between reads) by skipping that tick's reading rather than returning a nonsensical value — a failure mode the original script had no protection against. Returns `0.0` — never raises — whenever RAPL is absent, unreadable, or the delta computation can't proceed, preserving the Session-12 Decision-9 safety property that `CPUPowerDraw` must never be capable of taking down `polling_loop`.
 - `parse_data()` simplified from a 15-line inline `try/except subprocess.run(...)` block to a single `cpu_power = _read_cpu_power_draw()` call.
 - Removed: `config.POWER_DRAW_SCRIPT` / `POWER_DRAW_SCRIPT_ADDR` (from `config.py`, `.env`, `sample.env`, `scripts/deploy.sh`'s interactive prompt and generated `.env` template, and `docs/DEPLOYMENT.md`/`README.md`).
-- Added: a second sudoers line in `scripts/deploy.sh`'s automated sudoers setup (alongside the existing `powerprofilesctl` entry) — `NOPASSWD: /usr/bin/cat /sys/devices/virtual/powercap/*/energy_uj, /usr/bin/cat /sys/devices/virtual/powercap/*/*/energy_uj` — covering the RAPL fallback path. Documented in `docs/DEPLOYMENT.md` §6/§6a.
+- Added: a second sudoers line in `scripts/deploy.sh`'s automated sudoers setup (alongside the existing `powerprofilesctl` entry) covering the RAPL fallback path, listing exact literal `energy_uj` paths discovered at deploy time (see Part 3 below for why this must never be a wildcard). Documented in `docs/DEPLOYMENT.md` §6/§6a.
 
 **Verified:** unit-tested the domain-filtering and power-delta logic against a synthetic fake `/sys/devices/virtual/powercap` tree (package-0, core, uncore, psys, and an intel-rapl-mmio duplicate) — confirmed only the package-0 counter survives filtering, confirmed a 5,000,000 µJ delta over a simulated 1-second gap computes to ~5.0W, and confirmed a counter-wraparound (energy value decreasing between reads) correctly returns `0.0` instead of a negative or nonsensical value. Also confirmed `_read_cpu_power_draw()` returns a clean `0.0` with an empty `_power_cap_paths` list on a machine with no RAPL support at all (this dev machine).
+
+### Part 3 — Self-caught security finding: wildcarded sudoers entry allowed root-read of any file via symlink
+
+A follow-up security audit of this session's own work caught a real local-privilege-escalation bug in the sudoers entry Part 2 had just added to `scripts/deploy.sh`:
+
+```
+DEPLOY_USER ALL=(ALL) NOPASSWD: /usr/bin/cat /sys/devices/virtual/powercap/*/energy_uj, ...
+```
+
+**Problem:** confirmed via `man sudoers` ("Wildcards in command arguments") that wildcard characters inside a sudo command's *argument* — as opposed to the command's own path — are matched across `/`, unlike normal shell globbing. This means the rule above also matches, for example:
+
+```
+sudo cat /sys/devices/virtual/powercap/../../../../tmp/evil/energy_uj
+```
+
+If `tmp/evil/energy_uj` is a symlink the attacker creates pointing at, say, `/etc/shadow`, `cat` follows it and the command succeeds — under this rule, **any process running as `DEPLOY_USER` can read any file on the filesystem as root**, not just RAPL counters. The man page's own documented example (`/bin/cat /var/log/messages*` also matching `/bin/cat /var/log/messages /etc/shadow`) confirms this is the intended, documented behavior of sudoers wildcards — not a parsing quirk specific to this rule.
+
+**Fix (`scripts/deploy.sh`):** removed the wildcard. `deploy.sh` now imports `hardware.py` and calls `_scan_power_caps()` directly (`$VENV/bin/python3 -c "import hardware; ..."`) to discover the *exact* literal `energy_uj` paths present on the deployment machine — these are fixed by the hardware and don't change at runtime — and writes one `NOPASSWD: /usr/bin/cat <exact path>` clause per discovered path, with no wildcard characters anywhere in the rule. If no RAPL counters are found, the cat sudoers line is skipped entirely (with a `warn` message) rather than writing an unused-but-still-dangerous wildcard "just in case." `docs/DEPLOYMENT.md` §6 was rewritten to show operators doing this manually the same way, with the exploit explained so the mistake isn't reintroduced later.
+
+**Verified:** simulated both branches of the new bash logic (RAPL paths present → correct literal multi-path `NOPASSWD` line; RAPL paths absent → clean skip) and ran the actual `hardware._scan_power_caps()` Python call deploy.sh now shells out to, confirming it imports and runs cleanly with no side effects (no hardware connection attempted at import time — `config.CONTROLLER` is just `None` until `lifespan` sets it).
 
 ---
 

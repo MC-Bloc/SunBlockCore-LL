@@ -133,16 +133,45 @@ EOF
 fi
 
 # ── 5. Passwordless sudo for powerprofilesctl + RAPL power-draw reads ─────────
-# The second line is for hardware.py's direct read of Intel RAPL powercap
+# The cat entry is for hardware.py's direct read of Intel RAPL powercap
 # energy_uj counters (CPUPowerDraw) — those files are root-only on most distros.
 # hardware.py tries a direct read first and only falls back to this sudo `cat`
 # if that fails, so this entry is harmless (just unused) on non-Intel hardware.
+#
+# IMPORTANT: this intentionally lists exact literal paths, NOT a wildcard like
+# /sys/devices/virtual/powercap/*/energy_uj. In sudoers, wildcards inside a
+# command *argument* (as opposed to the command path itself) match across `/`
+# — see `man sudoers` "Wildcards in command arguments". A wildcarded rule here
+# would let the deploy user run e.g.
+#   sudo cat /sys/devices/virtual/powercap/../../../../tmp/evil/energy_uj
+# where tmp/evil/energy_uj is an attacker-created symlink to /etc/shadow —
+# cat follows symlinks, so this would be a local root-read-any-file bug.
+# Enumerating the real paths at deploy time (they're fixed by the hardware,
+# discovered the same way hardware.py's own _scan_power_caps() does) avoids
+# wildcards entirely, so no such traversal is possible.
+RAPL_PATHS=$("$VENV/bin/python3" -c "
+import sys
+sys.path.insert(0, '$PROJECT_DIR')
+import hardware
+for p in hardware._scan_power_caps():
+    print(p)
+" 2>/dev/null)
+
 SUDOERS_FILE="/etc/sudoers.d/sunblock"
 if [[ ! -f "$SUDOERS_FILE" ]]; then
     info "Configuring passwordless sudo for powerprofilesctl + RAPL power reads..."
     {
         echo "$DEPLOY_USER ALL=(ALL) NOPASSWD: /usr/bin/powerprofilesctl"
-        echo "$DEPLOY_USER ALL=(ALL) NOPASSWD: /usr/bin/cat /sys/devices/virtual/powercap/*/energy_uj, /usr/bin/cat /sys/devices/virtual/powercap/*/*/energy_uj"
+        if [[ -n "$RAPL_PATHS" ]]; then
+            CAT_CMDS=""
+            while IFS= read -r p; do
+                [[ -z "$p" ]] && continue
+                CAT_CMDS+="/usr/bin/cat $p, "
+            done <<< "$RAPL_PATHS"
+            echo "$DEPLOY_USER ALL=(ALL) NOPASSWD: ${CAT_CMDS%, }"
+        else
+            warn "No Intel RAPL power counters found on this machine — skipping the cat sudoers entry (CPUPowerDraw will report 0)."
+        fi
     } | sudo tee "$SUDOERS_FILE" > /dev/null
     sudo chmod 440 "$SUDOERS_FILE"
     success "Sudoers entry written to $SUDOERS_FILE."

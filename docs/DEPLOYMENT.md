@@ -169,19 +169,34 @@ tail -f /home/YOUR_USER/SunblockData/SunBlockAdminAudit.txt
 sudo visudo
 ```
 
-Add at the bottom:
+Add the `powerprofilesctl` line at the bottom:
 
 ```
 YOUR_USER ALL=(ALL) NOPASSWD: /usr/bin/powerprofilesctl
-YOUR_USER ALL=(ALL) NOPASSWD: /usr/bin/cat /sys/devices/virtual/powercap/*/energy_uj, /usr/bin/cat /sys/devices/virtual/powercap/*/*/energy_uj
 ```
 
-The second line is for `CPUPowerDraw`: `hardware.py` reads Intel RAPL power
-counters directly (no external script needed — see §"CPU Power Draw" below)
-and those files are root-only on most distros. It tries an unprivileged read
-first and only falls back to this `sudo cat` if that fails, so the entry is
-harmless (just unused) on non-Intel hardware or if you've made the files
-world-readable some other way (e.g. a udev rule).
+For `CPUPowerDraw`, `hardware.py` reads Intel RAPL power counters directly (no
+external script needed — see §"CPU Power Draw" below) and those files are
+root-only on most distros. It tries an unprivileged read first and only falls
+back to `sudo cat` if that fails. **Do not** add a wildcarded sudoers entry like
+`NOPASSWD: /usr/bin/cat /sys/devices/virtual/powercap/*/energy_uj` — in sudoers,
+a wildcard inside a command *argument* (as opposed to the command path itself)
+matches across `/`, so that rule would also permit
+`sudo cat /sys/devices/virtual/powercap/../../../../tmp/evil/energy_uj`, where
+`tmp/evil/energy_uj` is an attacker-created symlink to e.g. `/etc/shadow` — `cat`
+follows symlinks, making this a local root-read-any-file vector for anyone who
+can run code as `YOUR_USER`. Instead, list the *exact* literal paths for your
+hardware (`scripts/deploy.sh` does this automatically by importing `hardware.py`
+and calling `_scan_power_caps()`); to do it manually:
+
+```bash
+.venv/bin/python3 -c "import hardware; [print(p) for p in hardware._scan_power_caps()]"
+```
+
+Add one `NOPASSWD: /usr/bin/cat <exact path>` line per path printed (commas to
+combine multiple paths on one line are fine — just no wildcards). If the command
+prints nothing, this machine has no RAPL counters and the sudoers entry can be
+skipped entirely; `CPUPowerDraw` will simply report `0`.
 
 ---
 
