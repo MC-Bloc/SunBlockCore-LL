@@ -404,32 +404,6 @@ As a further latency reduction, `parse_data()`'s 9 individual `ctrl.get_*()` cal
 
 ---
 
-## Session 13 — Fix `simulator.py` Column Order; Replace External Power-Draw Script with Direct RAPL Integration
-
-### Part 1 — `simulator.py` dict key order didn't match the table schema
-
-**Problem:** `db.write_db()` inserts positionally — `INSERT INTO solardata VALUES (?, ...)` against `list(config.SOLAR_DATA.values())` — so a `SOLAR_DATA` dict's key order must match the `solardata` table's column order (`..., LoadPower, BattPercentage, BattOverallCurrent, CPUPowerDraw, ...`) exactly. `hardware.py`'s `parse_data()` was corrected to this order in the "fix sequence" commit during Session 12's hardware work, but `simulator.py`'s `_SimState.step()` still had the old order (`BattOverallCurrent`, `BattPercentage`, `LoadPower` — i.e. the first and third of those three swapped relative to the table).
-
-**Why this was inert (for now):** `polling_loop` only calls `write_db()` when `config.DATA_MAN and not config.SIM_MODE` — so a simulator-sourced `SOLAR_DATA` dict is never actually inserted into the DB under the current code path. Found by directly comparing the `CREATE TABLE solardata(...)` column order in `db.py` against both `hardware.parse_data()` and `simulator.step()`'s dict key order.
-
-**Fix:** reordered `simulator.py`'s dict literal to `..., BattChargePower, LoadPower, BattPercentage, BattOverallCurrent, CPUPowerDraw, ...`, matching the table and `hardware.py` exactly. Verified by importing `simulator` directly and checking `list(simulate_data().keys())` against the table's column list.
-
-### Part 2 — Replaced the external `power_draw.sh` script with direct RAPL integration
-
-**Problem:** `CPUPowerDraw` was measured by shelling out to an external script (`POWER_DRAW_SCRIPT_ADDR` in `.env`, pointed at a bash script living outside the repo, e.g. `/home/pc/power_scripts/powerdraw.sh`). That script read Intel RAPL `energy_uj` powercap counters, summed deltas across two ~1-second-apart samples, and printed a wattage — but it had to be separately installed, made executable, and granted its own sudoers entry on every deployment, completely outside the project's normal review/testing/version-control. The operator asked for this functionality to be integrated directly into the codebase instead.
-
-**Implementation (`hardware.py`):**
-- `_scan_power_caps()` — walks `/sys/devices/virtual/powercap/**/name` once (cached in `_power_cap_paths`), keeping one `energy_uj` path per top-level RAPL domain. Filtering reproduces the original script's logic exactly: skip any path containing `intel-rapl-mmio` (duplicate of `intel-rapl`), skip any domain whose `name` file contains `core` (covers both `core` and `uncore`) or `psys` (both already summed into their parent `package` reading).
-- `_read_energy_values()` — reads the raw counters: a direct `open(path).read()` first, falling back to one batched `sudo -n cat <path...>` call if that raises `PermissionError` (the common case — `energy_uj` is root-only on most distros). `-n` (non-interactive) makes this fail fast rather than hang if the sudoers entry isn't configured.
-- `_read_cpu_power_draw()` — the new `parse_data()` entry point. Computes power as `(current_total_uj - previous_total_uj) / 1_000_000 / (now - previous_time)`, using `time.monotonic()` for the elapsed-time measurement (replacing the old script's assumed fixed ~1-second gap, which makes the new version more accurate regardless of `READ_INTERVAL`). Explicitly guards against a negative energy delta (counter wraparound or reset between reads) by skipping that tick's reading rather than returning a nonsensical value — a failure mode the original script had no protection against. Returns `0.0` — never raises — whenever RAPL is absent, unreadable, or the delta computation can't proceed, preserving the Session-12 Decision-9 safety property that `CPUPowerDraw` must never be capable of taking down `polling_loop`.
-- `parse_data()` simplified from a 15-line inline `try/except subprocess.run(...)` block to a single `cpu_power = _read_cpu_power_draw()` call.
-- Removed: `config.POWER_DRAW_SCRIPT` / `POWER_DRAW_SCRIPT_ADDR` (from `config.py`, `.env`, `sample.env`, `scripts/deploy.sh`'s interactive prompt and generated `.env` template, and `docs/DEPLOYMENT.md`/`README.md`).
-- Added: a second sudoers line in `scripts/deploy.sh`'s automated sudoers setup (alongside the existing `powerprofilesctl` entry) — `NOPASSWD: /usr/bin/cat /sys/devices/virtual/powercap/*/energy_uj, /usr/bin/cat /sys/devices/virtual/powercap/*/*/energy_uj` — covering the RAPL fallback path. Documented in `docs/DEPLOYMENT.md` §6/§6a.
-
-**Verified:** unit-tested the domain-filtering and power-delta logic against a synthetic fake `/sys/devices/virtual/powercap` tree (package-0, core, uncore, psys, and an intel-rapl-mmio duplicate) — confirmed only the package-0 counter survives filtering, confirmed a 5,000,000 µJ delta over a simulated 1-second gap computes to ~5.0W, and confirmed a counter-wraparound (energy value decreasing between reads) correctly returns `0.0` instead of a negative or nonsensical value. Also confirmed `_read_cpu_power_draw()` returns a clean `0.0` with an empty `_power_cap_paths` list on a machine with no RAPL support at all (this dev machine).
-
----
-
 ## Summary of All API Endpoints (current)
 
 | Method | Path | Auth | Description |
@@ -485,11 +459,11 @@ As a further latency reduction, `parse_data()`'s 9 individual `ctrl.get_*()` cal
 
 | File | Sessions | Key changes |
 |---|---|---|
-| `config.py` | 3, 5, 8, 10, 13 | Module introduced; SETTINGS_DB_NAME, ENV_DEFAULTS, ADMIN_PATH, ADMIN_AUDIT_FILE; SECRET_KEY default removed (now ""), TOTP_SECRET/TOTP_ENABLED runtime state; POWER_DRAW_SCRIPT/POWER_DRAW_SCRIPT_ADDR removed (Session 13 — CPUPowerDraw now read directly, see hardware.py) |
+| `config.py` | 3, 5, 8, 10 | Module introduced; SETTINGS_DB_NAME, ENV_DEFAULTS, ADMIN_PATH, ADMIN_AUDIT_FILE; SECRET_KEY default removed (now ""), TOTP_SECRET/TOTP_ENABLED runtime state |
 | `auth.py` | 3, 4, 5, 9, 10 | Module introduced; SettingsUpdate, PasswordChange, TokenCreateRequest, TwoFACodeRequest, TwoFADisableRequest models; verify_session_or_token dependency; pending-2FA JWT helpers (create/verify), verify_totp_code; "purpose" claim rejected by all session-verifying functions |
 | `db.py` | 3, 5, 7, 8, 9, 10 | Module introduced; settings store (now incl. secret_key/totp_secret/totp_enabled + auto-generate-and-persist SECRET_KEY), query_history, query_visualize, admin_log, _validate_data_directory, api_tokens store, backup_codes store (generate/verify-and-consume/count/clear) |
-| `hardware.py` | 3, 12, 13 | Extracted from sunblock.py; CPUPowerDraw made optional/guarded (float, defaults to 0.0); 30s cache for check_power_profile()/set_power_profile(); CPUPowerDraw reimplemented as direct Intel RAPL powercap integration (`_scan_power_caps`/`_read_energy_values`/`_read_cpu_power_draw`), replacing the external power_draw.sh script entirely (Session 13) |
-| `simulator.py` | 2, 3, 13 | Created; extracted to own module; dict key order fixed to match solardata table schema (LoadPower/BattPercentage/BattOverallCurrent) — was inconsistent with hardware.py's already-fixed order (Session 13) |
+| `hardware.py` | 3, 12 | Extracted from sunblock.py; CPUPowerDraw made optional/guarded (float, defaults to 0.0); 30s cache for check_power_profile()/set_power_profile() |
+| `simulator.py` | 2, 3 | Created; extracted to own module |
 | `sunblock.py` | 2–12 | Refactored; all routes, security hardening, rate limits, CSP, audit log calls; API token routes; two-step login + full /api/2fa/* route set; removed obsolete SECRET_KEY startup warning; routes now render public.html/admin.html; CSP nonce + `import secrets` removed (Session 11); polling_loop sleep made interval-correcting via loop.time() (Session 12) |
 | `templates/index.html` | 4–10 | **Deleted in Session 11** — split into `_base.html`/`admin.html`/`public.html` + extracted `public/css/index.css` + `public/js/sunblock.js`. History (4–10): Settings, History, Visualize tabs; extra charts; auth-gating; CSP nonce; Plotly; API Tokens panel; Two-Factor Authentication panel + two-step login modal; vendored QR rendering |
 | `templates/_base.html` | 11 | Created: shared page shell extracted from index.html; declares 4 empty Jinja2 blocks (referrer_meta, extra_tabs, live_admin_extras, admin_panels); 110 lines (was 1062 right after the split, before CSS/JS extraction) |
@@ -498,8 +472,8 @@ As a further latency reduction, `parse_data()`'s 9 individual `ctrl.get_*()` cal
 | `templates/404.html` | 8 | Created: custom 404 page |
 | `public/css/index.css` | 11 | Created: extracted page styles (verbatim from the old inline `<style>` block, 168 lines) |
 | `public/js/sunblock.js` | 11 | Created: extracted Alpine.data('sunblock', ...) component + supporting constants (verbatim from the old inline `<script>`, 781 lines) |
-| `sample.env` | 2, 8, 10, 13 | SIM_MODE, ADMIN_PATH, cleanup; SECRET_KEY now documented as optional/auto-generated; POWER_DRAW_SCRIPT_ADDR removed (Session 13) |
-| `scripts/deploy.sh` | early, 8, 13 | systemd deployment; ADMIN_PATH generation; openpyxl; removed "Power draw script" prompt + .env line; added RAPL `cat` sudoers entry alongside powerprofilesctl (Session 13) |
+| `sample.env` | 2, 8, 10 | SIM_MODE, ADMIN_PATH, cleanup; SECRET_KEY now documented as optional/auto-generated |
+| `scripts/deploy.sh` | early, 8 | systemd deployment; ADMIN_PATH generation; openpyxl |
 | `scripts/vendor.sh` | 8, 10 | uPlot → Plotly basic bundle; added qrcodejs for client-side 2FA QR rendering |
 | `requirements.txt` | 10 | Added pyotp |
 | `public/vendor/qrcode.min.js` | 10 | Vendored qrcodejs 1.0.0 |

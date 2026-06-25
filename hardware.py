@@ -1,108 +1,10 @@
 """Solar charge controller I/O: live data polling, power profiles, parameter r/w."""
 
-import glob
-import os
 import subprocess
 import time
 from datetime import datetime
-from typing import Optional
 
 import config
-
-# ── CPU power draw (Intel RAPL) ────────────────────────────────────────────────
-# Replaces the old POWER_DRAW_SCRIPT_ADDR external shell script (power_draw.sh).
-# That script read /sys/devices/virtual/powercap/*/energy_uj counters, summed the
-# deltas between two ~1-second-apart samples, and printed a wattage. The same
-# logic now lives here directly — no separate script file to install or maintain.
-#
-# Domain filtering mirrors the original script exactly:
-#   - skip any path containing "intel-rapl-mmio" (duplicate of "intel-rapl")
-#   - skip any domain whose name contains "core" (covers both "core" and "uncore")
-#     or "psys" — both are already summed into their parent "package" reading
-#
-# Power is computed as the energy delta between this call and the previous one,
-# divided by the *actual* elapsed time (via time.monotonic()), rather than
-# assuming a fixed ~1s gap like the original script did — this stays accurate
-# regardless of READ_INTERVAL or how long a given poll tick took.
-#
-# energy_uj is root-only on most distros. A direct read is tried first (works if
-# the operator has set up a udev rule making it world-readable); if that raises
-# PermissionError, falls back to one batched `sudo -n cat <path...>` call. See
-# docs/DEPLOYMENT.md for the required sudoers entry. If RAPL isn't present at
-# all (non-Intel hardware, containers, this dev machine, etc.), CPUPowerDraw is
-# simply 0.0 — same fallback behaviour as the old script being absent.
-_power_cap_paths:       Optional[list] = None   # None = not yet scanned
-_power_last_energy_uj:  Optional[int]  = None
-_power_last_time:       Optional[float] = None
-
-
-def _scan_power_caps() -> list:
-    """Find one energy_uj path per top-level RAPL domain, e.g. 'package-0'."""
-    paths = []
-    for name_path in glob.glob("/sys/devices/virtual/powercap/**/name", recursive=True):
-        if "intel-rapl-mmio" in name_path:
-            continue
-        try:
-            with open(name_path) as f:
-                domain = f.read().strip()
-        except OSError:
-            continue
-        if "core" in domain or "psys" in domain:
-            continue
-        energy_path = os.path.join(os.path.dirname(name_path), "energy_uj")
-        if os.path.isfile(energy_path):
-            paths.append(energy_path)
-    return paths
-
-
-def _read_energy_values(paths: list) -> Optional[list]:
-    """Read raw energy_uj counters — direct read first, then a batched sudo fallback."""
-    try:
-        return [int(open(p).read().strip()) for p in paths]
-    except (OSError, ValueError):
-        pass
-    try:
-        result = subprocess.run(
-            ["sudo", "-n", "cat", *paths], capture_output=True, text=True, timeout=5
-        )
-        if result.returncode != 0:
-            return None
-        lines = result.stdout.strip().splitlines()
-        if len(lines) != len(paths):
-            return None
-        return [int(v) for v in lines]
-    except Exception:
-        return None
-
-
-def _read_cpu_power_draw() -> float:
-    """Instantaneous CPU package power (W), or 0.0 if RAPL is unavailable/unreadable."""
-    global _power_cap_paths, _power_last_energy_uj, _power_last_time
-
-    if _power_cap_paths is None:
-        _power_cap_paths = _scan_power_caps()
-    if not _power_cap_paths:
-        return 0.0
-
-    now = time.monotonic()
-    values = _read_energy_values(_power_cap_paths)
-    if values is None:
-        return 0.0
-
-    total_uj = sum(values)
-    power = 0.0
-    if _power_last_energy_uj is not None and _power_last_time is not None:
-        delta_uj = total_uj - _power_last_energy_uj
-        delta_s  = now - _power_last_time
-        # A negative delta means a counter wrapped or was reset between reads —
-        # skip this tick's reading rather than report a nonsensical value.
-        if delta_uj >= 0 and delta_s > 0:
-            power = (delta_uj / 1_000_000.0) / delta_s
-
-    _power_last_energy_uj = total_uj
-    _power_last_time = now
-    return round(power, 3)
-
 
 # ── Power-profile cache ───────────────────────────────────────────────────────
 # check_power_profile() shells out to `sudo powerprofilesctl get`, which is
@@ -144,7 +46,19 @@ def set_power_profile(profile: str) -> str:
 
 def parse_data() -> dict:
     ctrl = config.CONTROLLER
-    cpu_power = _read_cpu_power_draw()
+
+    # CPUPowerDraw is optional — only measured when POWER_DRAW_SCRIPT_ADDR is set.
+    # If the script is absent or fails, fall back to 0 so the polling loop keeps
+    # running instead of crashing on a FileNotFoundError / TypeError.
+    cpu_power: float = 0.0
+    if config.POWER_DRAW_SCRIPT:
+        try:
+            result = subprocess.run(
+                [config.POWER_DRAW_SCRIPT], capture_output=True, timeout=5
+            )
+            cpu_power = float(result.stdout.decode().replace("W", "").strip())
+        except Exception:
+            cpu_power = 0.0
 
     return {
         "Timestamp":          datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

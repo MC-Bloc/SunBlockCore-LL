@@ -90,6 +90,11 @@ else
     DATA_DIR="${DATA_DIR:-$DEFAULT_DATA_DIR}"
     mkdir -p "$DATA_DIR"
 
+    # Power draw script
+    DEFAULT_SCRIPT="/home/$DEPLOY_USER/power_scripts/powerdraw.sh"
+    read -rp "  Power draw script [$DEFAULT_SCRIPT]: " POWER_SCRIPT
+    POWER_SCRIPT="${POWER_SCRIPT:-$DEFAULT_SCRIPT}"
+
     # Admin username
     read -rp "  Admin username [admin]: " ADMIN_USER
     ADMIN_USER="${ADMIN_USER:-admin}"
@@ -116,6 +121,7 @@ CONTROLLER_PORT=$CTRL_PORT
 CONTROLLER_SLAVE=$CTRL_SLAVE
 
 DATA_DIRECTORY=$DATA_DIR
+POWER_DRAW_SCRIPT_ADDR=$POWER_SCRIPT
 
 DATA_MAN=true
 READ_INTERVAL=1
@@ -132,18 +138,12 @@ EOF
     success ".env written and permissions set to 600."
 fi
 
-# ── 5. Passwordless sudo for powerprofilesctl + RAPL power-draw reads ─────────
-# The second line is for hardware.py's direct read of Intel RAPL powercap
-# energy_uj counters (CPUPowerDraw) — those files are root-only on most distros.
-# hardware.py tries a direct read first and only falls back to this sudo `cat`
-# if that fails, so this entry is harmless (just unused) on non-Intel hardware.
+# ── 5. Passwordless sudo for powerprofilesctl ─────────────────────────────────
 SUDOERS_FILE="/etc/sudoers.d/sunblock"
 if [[ ! -f "$SUDOERS_FILE" ]]; then
-    info "Configuring passwordless sudo for powerprofilesctl + RAPL power reads..."
-    {
-        echo "$DEPLOY_USER ALL=(ALL) NOPASSWD: /usr/bin/powerprofilesctl"
-        echo "$DEPLOY_USER ALL=(ALL) NOPASSWD: /usr/bin/cat /sys/devices/virtual/powercap/*/energy_uj, /usr/bin/cat /sys/devices/virtual/powercap/*/*/energy_uj"
-    } | sudo tee "$SUDOERS_FILE" > /dev/null
+    info "Configuring passwordless sudo for powerprofilesctl..."
+    echo "$DEPLOY_USER ALL=(ALL) NOPASSWD: /usr/bin/powerprofilesctl" \
+        | sudo tee "$SUDOERS_FILE" > /dev/null
     sudo chmod 440 "$SUDOERS_FILE"
     success "Sudoers entry written to $SUDOERS_FILE."
 else

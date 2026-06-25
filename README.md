@@ -238,6 +238,7 @@ All values can be set in `.env`. Persistent overrides written via the admin pane
 | `CONTROLLER_PORT` | `/dev/ttyACM0` | Serial port for the Epever controller |
 | `CONTROLLER_SLAVE` | `1` | Modbus slave ID |
 | `DATA_DIRECTORY` | *(required)* | Directory for DB files and logs |
+| `POWER_DRAW_SCRIPT_ADDR` | *(none)* | Optional path to a script that reports CPU power draw. If unset (or the script fails), `CPUPowerDraw` reports `0` |
 | `DATA_MAN` | `true` | Write readings to SQLite |
 | `READ_INTERVAL` | `1` | Seconds between readings |
 | `SIM_MODE` | `false` | Use simulator instead of hardware |

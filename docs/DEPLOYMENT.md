@@ -58,6 +58,7 @@ CONTROLLER_PORT=/dev/ttyACM0
 CONTROLLER_SLAVE=1
 
 DATA_DIRECTORY=/home/YOUR_USER/SunblockData/
+POWER_DRAW_SCRIPT_ADDR=/home/YOUR_USER/power_scripts/powerdraw.sh
 
 DATA_MAN=true
 READ_INTERVAL=1
@@ -163,7 +164,7 @@ tail -f /home/YOUR_USER/SunblockData/SunBlockAdminAudit.txt
 
 ---
 
-## 6. Passwordless sudo for Power Profiles + CPU Power Draw
+## 6. Passwordless sudo for Power Profiles
 
 ```bash
 sudo visudo
@@ -173,26 +174,7 @@ Add at the bottom:
 
 ```
 YOUR_USER ALL=(ALL) NOPASSWD: /usr/bin/powerprofilesctl
-YOUR_USER ALL=(ALL) NOPASSWD: /usr/bin/cat /sys/devices/virtual/powercap/*/energy_uj, /usr/bin/cat /sys/devices/virtual/powercap/*/*/energy_uj
 ```
-
-The second line is for `CPUPowerDraw`: `hardware.py` reads Intel RAPL power
-counters directly (no external script needed — see §"CPU Power Draw" below)
-and those files are root-only on most distros. It tries an unprivileged read
-first and only falls back to this `sudo cat` if that fails, so the entry is
-harmless (just unused) on non-Intel hardware or if you've made the files
-world-readable some other way (e.g. a udev rule).
-
----
-
-## 6a. CPU Power Draw (automatic, no setup required)
-
-`CPUPowerDraw` is measured automatically from Intel RAPL powercap counters
-(`/sys/devices/virtual/powercap/*/energy_uj`) — there's no `POWER_DRAW_SCRIPT_ADDR`
-to configure and no external script to install. If RAPL isn't present (non-Intel
-CPU, a container, etc.) or the counters aren't readable even with the sudoers
-entry above, `CPUPowerDraw` simply reports `0` — the polling loop is unaffected
-either way.
 
 ---
 
