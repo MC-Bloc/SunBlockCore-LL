@@ -166,3 +166,13 @@
     .hist-empty { padding: 40px; text-align: center; color: var(--muted); font-size: 0.88rem; }
     .hist-placeholder { text-align: center; padding: 48px 20px; color: var(--muted); }
     .hist-placeholder .icon { font-size: 1.8rem; margin-bottom: 10px; }
+
+    /* Logs tab */
+    .log-panes { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 900px) { .log-panes { grid-template-columns: 1fr; } }
+    .log-pane { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column; min-height: 0; }
+    .log-pane-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px 0 16px; }
+    .log-box { margin: 12px 16px 16px 16px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; max-height: 65vh; overflow-y: auto; font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 0.75rem; line-height: 1.5; }
+    .log-line { white-space: pre-wrap; word-break: break-all; color: var(--text); padding: 1px 0; }
+    .log-line:hover { background: rgba(255,255,255,0.03); }
+    .log-empty { padding: 30px 16px; text-align: center; color: var(--muted); font-size: 0.85rem; }

@@ -58,6 +58,60 @@ def _write_audit_log(line: str) -> None:
         f.write(line)
 
 
+# ── Log viewing (admin panel Logs tab) ────────────────────────────────────────
+
+def _tail_lines(path: str, n: int) -> list:
+    """
+    Return the last `n` lines of a text file, oldest-first.
+
+    Reads from the end in growing chunks rather than loading the whole file —
+    these logs have no rotation/retention policy and grow unbounded, so a
+    naive readlines() would re-read an ever-larger file on every Logs tab
+    refresh.
+    """
+    if not path or not os.path.isfile(path):
+        return []
+    file_size = os.path.getsize(path)
+    if file_size == 0:
+        return []
+    avg_line_length = 200  # heuristic initial read size; doubles if too small
+    block_size = avg_line_length * n
+    with open(path, "rb") as f:
+        while True:
+            read_size = min(block_size, file_size)
+            f.seek(file_size - read_size)
+            data = f.read(read_size)
+            if data.count(b"\n") > n or read_size >= file_size:
+                break
+            block_size *= 2
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    return lines[-n:]
+
+
+_LOG_FILES = {
+    "app":   lambda: config.POWER_LOGS_FILE,
+    "audit": lambda: config.ADMIN_AUDIT_FILE,
+}
+
+
+def read_log_file(log_type: str, lines: int = 200) -> dict:
+    """
+    Return the last `lines` entries of the requested log file for the admin
+    panel's Logs tab.
+
+    `log_type` is "app" (SunBlockCoreLogs.txt) or "audit" (SunBlockAdminAudit.txt).
+    `available` is False when DATA_DIRECTORY isn't configured yet (the file
+    path is None) or the file hasn't been written to yet — both are normal
+    states, not errors, since early log lines fall back to stderr instead of
+    a file (see _write_log/_write_audit_log above).
+    """
+    path = _LOG_FILES[log_type]()
+    return {
+        "lines":     _tail_lines(path, lines) if path else [],
+        "available": bool(path and os.path.isfile(path)),
+    }
+
+
 # ── Database ──────────────────────────────────────────────────────────────────
 
 def check_db():
@@ -97,9 +151,25 @@ def write_db():
 
 # ── Persistent settings store ─────────────────────────────────────────────────
 
+def _connect_settings_db() -> sqlite3.Connection:
+    """
+    sqlite3.connect() does not create missing parent directories, and
+    SETTINGS_DB_NAME can point anywhere — the SETTINGS_DB env override, or
+    (its default) a path inside DATA_DIRECTORY, which may not exist on disk
+    yet on a fresh deploy. Ensure the parent directory exists before every
+    connection attempt, not just once at startup, since SETTINGS_DB_NAME can
+    also be reassigned to a not-yet-existing path via the .env SETTINGS_DB
+    override.
+    """
+    directory = os.path.dirname(config.SETTINGS_DB_NAME)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    return sqlite3.connect(config.SETTINGS_DB_NAME)
+
+
 def _settings_conn() -> sqlite3.Connection:
     """Open the settings DB and ensure the table exists."""
-    conn = sqlite3.connect(config.SETTINGS_DB_NAME)
+    conn = _connect_settings_db()
     conn.execute(
         "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)"
     )
@@ -193,7 +263,7 @@ def delete_setting(key: str) -> None:
 
 def _tokens_conn() -> sqlite3.Connection:
     """Open the settings DB and ensure the api_tokens table exists."""
-    conn = sqlite3.connect(config.SETTINGS_DB_NAME)
+    conn = _connect_settings_db()
     conn.execute(
         "CREATE TABLE IF NOT EXISTS api_tokens ("
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -307,7 +377,7 @@ def verify_api_token(raw_token: str) -> Optional[str]:
 
 def _backup_codes_conn() -> sqlite3.Connection:
     """Open the settings DB and ensure the backup_codes table exists."""
-    conn = sqlite3.connect(config.SETTINGS_DB_NAME)
+    conn = _connect_settings_db()
     conn.execute(
         "CREATE TABLE IF NOT EXISTS backup_codes ("
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"

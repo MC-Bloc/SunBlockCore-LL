@@ -63,8 +63,8 @@ from db import (
     admin_log, apply_data_directory, check_db, clear_backup_codes,
     count_unused_backup_codes, create_api_token, delete_setting,
     generate_backup_codes, list_api_tokens, load_settings, query_history,
-    query_visualize, revoke_api_token, save_setting, sunblock_log,
-    verify_and_consume_backup_code, write_db,
+    query_visualize, read_log_file, revoke_api_token, save_setting,
+    sunblock_log, verify_and_consume_backup_code, write_db,
 )
 from db import VIZ_FIELD_META
 from hardware import (
@@ -120,12 +120,20 @@ async def polling_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Must run before load_settings()/sunblock_log() below: if DATA_DIRECTORY is
+    # preset in .env but the directory doesn't exist on disk yet (e.g. a fresh
+    # deploy), both SETTINGS_DB_NAME and POWER_LOGS_FILE default to paths inside
+    # it, and sqlite3.connect()/open(..., 'a') don't create missing parent
+    # directories — load_settings() would crash the entire startup with
+    # "unable to open database file" before ever reaching the makedirs call
+    # that used to live here.
+    if config.DATA_DIRECTORY:
+        os.makedirs(config.DATA_DIRECTORY, exist_ok=True)
+
     await asyncio.to_thread(load_settings)
     await sunblock_log("Settings loaded from persistent store.")
 
-    if config.DATA_DIRECTORY:
-        os.makedirs(config.DATA_DIRECTORY, exist_ok=True)
-    else:
+    if not config.DATA_DIRECTORY:
         await sunblock_log(
             "WARNING: DATA_DIRECTORY is not set. "
             "Open the admin panel → Settings to configure it."
@@ -438,6 +446,31 @@ async def get_data_history(
     return await loop.run_in_executor(
         None, query_history, limit, offset, from_ts, to_ts, order
     )
+
+
+@app.get("/api/logs")
+@limiter.limit("60/minute")
+async def get_logs(
+    request:  Request,
+    log_type: str = Query(default="app", alias="type"),
+    lines:    int = 200,
+    user:     str = Depends(verify_session_or_token),
+):
+    """
+    Tail of an application log file for the admin panel's Logs tab.
+
+    type  — "app" (SunBlockCoreLogs.txt) or "audit" (SunBlockAdminAudit.txt)
+    lines — how many of the most recent lines to return (1-2000, default 200)
+
+    Returns {"lines": [...], "available": bool}. `available` is False (not
+    an error) when DATA_DIRECTORY isn't configured yet or the file hasn't
+    been written to on disk yet.
+    """
+    if log_type not in ("app", "audit"):
+        raise HTTPException(status_code=400, detail="type must be 'app' or 'audit'")
+    lines = max(1, min(lines, 2000))
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, read_log_file, log_type, lines)
 
 
 def _client_ip(request: Request) -> str:

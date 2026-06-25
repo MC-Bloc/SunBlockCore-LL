@@ -101,6 +101,14 @@
       histFilter: { from: '', to: '', limit: 100, order: 'desc' },
       histLoading: false,
 
+      // Logs
+      logs: {
+        app:   { lines: [], available: true },
+        audit: { lines: [], available: true },
+      },
+      logsLimit:   200,
+      logsLoading: { app: false, audit: false },
+
       // Login modal
       loginOpen:  false,
       loginUser:  '',
@@ -352,6 +360,7 @@
         if (name === 'energy'     && !this.stats)    this.loadStats();
         if (name === 'settings')                     { this.loadSettings(); this.loadTokens(); this.loadTwoFAStatus(); }
         if (name === 'history'    && !this.history)  this.loadHistory(0);
+        if (name === 'logs') { this.loadLogs('app'); this.loadLogs('audit'); }
       },
 
       // ── Visualize ──
@@ -776,6 +785,18 @@
         const next = this.history.offset + dir * this.history.limit;
         if (next < 0 || next >= this.history.total) return;
         this.loadHistory(next);
+      },
+
+      // ── Logs ──
+      async loadLogs(type) {
+        this.logsLoading[type] = true;
+        try {
+          const p = new URLSearchParams({ type, lines: this.logsLimit });
+          const res = await fetch('/api/logs?' + p);
+          if (res.status === 401) { this.authed = false; this.tab = 'live'; return; }
+          if (res.ok) this.logs[type] = await res.json();
+        } catch { /* swallow — server down */ }
+        finally  { this.logsLoading[type] = false; }
       },
 
     })); // Alpine.data

@@ -25,6 +25,9 @@
     <template x-if="authed">
       <div class="tab" :class="tab === 'settings'   && 'active'" @click="switchTab('settings')">Settings</div>
     </template>
+    <template x-if="authed">
+      <div class="tab" :class="tab === 'logs'       && 'active'" @click="switchTab('logs')">Logs</div>
+    </template>
 {% endblock %}
 
 {% block live_admin_extras %}
@@ -625,6 +628,56 @@
     <template x-if="histLoading && !history">
       <div class="card hist-placeholder"><div>Loading…</div></div>
     </template>
+
+  </div>
+
+  <!-- ══ LOGS ══ -->
+  <div class="panel" x-show="tab === 'logs'" style="max-width:1400px">
+
+    <div class="hist-toolbar">
+      <select class="hist-select" x-model.number="logsLimit" @change="loadLogs('app'); loadLogs('audit')">
+        <option value="100">100 lines</option>
+        <option value="200">200 lines</option>
+        <option value="500">500 lines</option>
+        <option value="1000">1000 lines</option>
+      </select>
+      <button class="btn btn-action" @click="loadLogs('app'); loadLogs('audit')"
+              :disabled="logsLoading.app || logsLoading.audit">
+        <span x-text="(logsLoading.app || logsLoading.audit) ? 'Refreshing…' : '↻ Refresh both'"></span>
+      </button>
+    </div>
+
+    <div class="log-panes">
+      <!-- App log -->
+      <div class="log-pane">
+        <div class="log-pane-header">
+          <span class="card-title" style="margin:0">Application Log</span>
+          <button class="btn btn-action" @click="loadLogs('app')" :disabled="logsLoading.app">↻</button>
+        </div>
+        <template x-if="!logs.app.available && !logsLoading.app">
+          <div class="log-empty">No log file yet — written once DATA_DIRECTORY is configured and at least one event has occurred.</div>
+        </template>
+        <template x-if="logs.app.available && logs.app.lines.length === 0 && !logsLoading.app">
+          <div class="log-empty">Log file is empty.</div>
+        </template>
+        <pre class="log-box" x-show="logs.app.lines.length > 0"><template x-for="(line, i) in logs.app.lines" :key="i"><div class="log-line" x-text="line"></div></template></pre>
+      </div>
+
+      <!-- Audit log -->
+      <div class="log-pane">
+        <div class="log-pane-header">
+          <span class="card-title" style="margin:0">Admin Audit Log</span>
+          <button class="btn btn-action" @click="loadLogs('audit')" :disabled="logsLoading.audit">↻</button>
+        </div>
+        <template x-if="!logs.audit.available && !logsLoading.audit">
+          <div class="log-empty">No audit log file yet — written once DATA_DIRECTORY is configured and at least one authenticated action has occurred.</div>
+        </template>
+        <template x-if="logs.audit.available && logs.audit.lines.length === 0 && !logsLoading.audit">
+          <div class="log-empty">Log file is empty.</div>
+        </template>
+        <pre class="log-box" x-show="logs.audit.lines.length > 0"><template x-for="(line, i) in logs.audit.lines" :key="i"><div class="log-line" x-text="line"></div></template></pre>
+      </div>
+    </div>
 
   </div>
 
