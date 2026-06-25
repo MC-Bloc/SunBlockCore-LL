@@ -53,12 +53,12 @@
         <div class="row"><span class="row-label">Voltage</span>    <span class="row-value" x-text="live ? live.PVVoltage.toFixed(2) + ' V' : '–'"></span></div>
         <div class="row"><span class="row-label">Current</span>    <span class="row-value" x-text="live ? live.PVCurrent.toFixed(2) + ' A' : '–'"></span></div>
         <div class="row"><span class="row-label">Power</span>      <span class="row-value" x-text="live ? live.PVPower.toFixed(1) + ' W' : '–'"></span></div>
-        <div class="row"><span class="row-label">Load Power</span> <span class="row-value" x-text="live ? live.LoadPower.toFixed(1) + ' W' : '–'"></span></div>
       </div>
 
       <div class="card">
         <div class="card-title">System</div>
         <div class="row"><span class="row-label">CPU Power Draw</span>  <span class="row-value" x-text="live ? live.CPUPowerDraw + ' W' : '–'"></span></div>
+        <div class="row"><span class="row-label">System Power Power</span> <span class="row-value" x-text="live ? live.LoadPower.toFixed(1) + ' W' : '–'"></span></div>
         <div class="row"><span class="row-label">Connected Users</span> <span class="row-value" x-text="live ? live.ConnectedUsers : '–'"></span></div>
         <div class="row"><span class="row-label">Last Update</span>     <span class="row-value" x-text="live ? live.Timestamp : '–'"></span></div>
       </div>
