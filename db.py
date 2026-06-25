@@ -76,6 +76,14 @@ def check_db():
             "LoadPower real, BattPercentage int, BattOverallCurrent real, "
             "CPUPowerDraw real, PowerProfile text)"
         )
+    # Outside the create_table guard so it also backfills on existing databases —
+    # without this, query_history()'s COUNT(*) and ORDER BY Timestamp queries do
+    # a full table scan, which is the dominant cost on large tables (the LIMIT/
+    # OFFSET row fetch itself is already bounded — see query_history() below).
+    config.DB_CURSOR.execute(
+        "CREATE INDEX IF NOT EXISTS idx_solardata_timestamp ON solardata(Timestamp)"
+    )
+    config.DB_CONNECTION.commit()
 
 
 def write_db():

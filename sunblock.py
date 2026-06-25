@@ -71,7 +71,7 @@ from hardware import (
     apply_controller_params, check_power_profile,
     parse_data, read_controller_params,
     read_controller_stats, read_controller_status,
-    set_power_profile,
+    set_power_profile, sync_rtc,
 )
 from simulator import simulate_data
 
@@ -900,9 +900,9 @@ async def get_controller_status(_=Depends(require_controller)):
     return await loop.run_in_executor(None, read_controller_status)
 
 @app.post("/api/controller/rtc/sync")
-async def sync_rtc(request: Request, user: str = Depends(verify_session_or_token), _=Depends(require_real_controller)):
+async def sync_rtc_route(request: Request, user: str = Depends(verify_session_or_token), _=Depends(require_real_controller)):
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, lambda: config.CONTROLLER.set_rtc(datetime.now()))
+    await loop.run_in_executor(None, sync_rtc)
     await admin_log("RTC_SYNC", ip=_client_ip(request))
     return {"message": "RTC synced to server time"}
 
