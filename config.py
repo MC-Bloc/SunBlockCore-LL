@@ -19,7 +19,8 @@ CONTROLLER_SLAVE = int(os.getenv("CONTROLLER_SLAVE", 1))
 # DATA_DIRECTORY may be absent on first run — the admin panel accepts it at
 # runtime and saves it to the settings DB so it persists across restarts.
 DATA_DIRECTORY    = os.getenv("DATA_DIRECTORY")   # None until set
-POWER_DRAW_SCRIPT = os.getenv("POWER_DRAW_SCRIPT_ADDR")
+# CPU power draw (CPUPowerDraw) is read directly from Intel RAPL powercap
+# counters in hardware.py — no longer a configurable external script.
 
 # The settings DB lives at a fixed location independent of DATA_DIRECTORY so
 # the server can start, accept a data directory from the admin panel, and save
