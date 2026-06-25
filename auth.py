@@ -7,7 +7,7 @@ import bcrypt as _bcrypt
 import pyotp
 from fastapi import Cookie, Header, HTTPException, Request
 from jose import JWTError, jwt
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -21,10 +21,58 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
+# The deployed battery bank is 12V (confirmed by simulator.py's real-deployment-
+# derived BattVoltage baseline of 11.5-14.8V). VOLTAGE_MIN/MAX below are a broad,
+# conservative safety envelope for ANY 12V lead-acid/AGM/gel system — they exist
+# to reject clearly unsafe or mistyped values (e.g. 99V, a negative number), not
+# to replace correct battery-specific configuration. Consult your Tracer-AN's
+# manual for the exact recommended thresholds for your battery chemistry before
+# relying on these bounds as your only check.
+VOLTAGE_MIN = 8.0
+VOLTAGE_MAX = 17.0
+
+# Must match epevermodbus.driver.EpeverChargeController.battery_voltage_control_register_names
+_VOLTAGE_CONTROL_KEYS = {
+    "over_voltage_disconnect_voltage", "charging_limit_voltage", "over_voltage_reconnect_voltage",
+    "equalize_charging_voltage", "boost_charging_voltage", "float_charging_voltage",
+    "boost_reconnect_charging_voltage", "low_voltage_reconnect_voltage", "under_voltage_recover_voltage",
+    "under_voltage_warning_voltage", "low_voltage_disconnect_voltage", "discharging_limit_voltage",
+}
+
 class ControllerParamsUpdate(BaseModel):
-    battery_capacity: Optional[int] = None
-    temperature_compensation_coefficient: Optional[float] = None
-    voltage_controls: Optional[dict] = None
+    battery_capacity: Optional[int]   = Field(default=None, ge=1, le=10_000)
+    temperature_compensation_coefficient: Optional[float] = Field(default=None, ge=0, le=9)
+    voltage_controls: Optional[dict]  = None
+
+    @field_validator("voltage_controls")
+    @classmethod
+    def _validate_voltage_controls(cls, v):
+        if v is None:
+            return v
+        if not v:
+            raise ValueError("voltage_controls must not be empty")
+        for key, val in v.items():
+            if key not in _VOLTAGE_CONTROL_KEYS:
+                raise ValueError(f"unknown voltage_controls key: {key!r}")
+            if not isinstance(val, (int, float)) or isinstance(val, bool):
+                raise ValueError(f"{key} must be a number")
+            if not (VOLTAGE_MIN <= val <= VOLTAGE_MAX):
+                raise ValueError(
+                    f"{key}={val} is outside the safe range "
+                    f"[{VOLTAGE_MIN}, {VOLTAGE_MAX}]V for a 12V system"
+                )
+        # Only the two orderings that are unambiguous and chemistry-independent
+        # across every charge controller (disconnect must be more extreme than
+        # its matching reconnect point) — checked only when both keys are present
+        # in this same request, since the underlying driver merges partial updates
+        # with the controller's current values for any keys not included here.
+        ovd, ovr = v.get("over_voltage_disconnect_voltage"), v.get("over_voltage_reconnect_voltage")
+        if ovd is not None and ovr is not None and ovd < ovr:
+            raise ValueError("over_voltage_disconnect_voltage must be >= over_voltage_reconnect_voltage")
+        lvd, lvr = v.get("low_voltage_disconnect_voltage"), v.get("low_voltage_reconnect_voltage")
+        if lvd is not None and lvr is not None and lvr < lvd:
+            raise ValueError("low_voltage_reconnect_voltage must be >= low_voltage_disconnect_voltage")
+        return v
 
 class SettingsUpdate(BaseModel):
     data_directory:     Optional[str]   = None  # absolute path; required on first run

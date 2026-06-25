@@ -226,6 +226,20 @@ async def not_found(request: Request, exc: HTTPException):
         return JSONResponse(status_code=404, content={"detail": "Not found"})
     return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
 
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError):
+    # FastAPI's default 422 body has `detail` as a list of {loc, msg, ...} dicts —
+    # fine for API clients, but the admin panel's error banners just do
+    # `err.detail || 'Failed.'` and render it as text, which would show up as
+    # "[object Object]" for a list. Flatten to a single readable string instead;
+    # this is what surfaces e.g. the voltage_controls range/ordering errors from
+    # ControllerParamsUpdate in the Edit Parameters modal.
+    messages = []
+    for err in exc.errors():
+        loc = ".".join(str(p) for p in err["loc"] if p != "body")
+        messages.append(f"{loc}: {err['msg']}" if loc else err["msg"])
+    return JSONResponse(status_code=422, content={"detail": "; ".join(messages)})
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
