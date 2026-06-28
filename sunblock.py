@@ -62,7 +62,7 @@ from auth import (
 from db import (
     admin_log, apply_data_directory, check_db, clear_backup_codes,
     count_unused_backup_codes, create_api_token, delete_setting,
-    generate_backup_codes, list_api_tokens, load_settings, query_history,
+    generate_backup_codes, list_api_tokens, load_settings, query_all_rows, query_history,
     query_visualize, read_log_file, revoke_api_token, save_setting,
     sunblock_log, verify_and_consume_backup_code, write_db,
 )
@@ -535,8 +535,7 @@ async def download_csv(request: Request, user: str = Depends(verify_session_or_t
     await admin_log("DOWNLOAD", "format=csv", ip=_client_ip(request))
 
     def _build():
-        result = query_history(limit=1_000_000, offset=0, from_ts=None, to_ts=None, order="asc")
-        rows = result["rows"]
+        rows = query_all_rows(order="asc")
         buf = io.StringIO()
         if rows:
             writer = csv.DictWriter(buf, fieldnames=rows[0].keys())
@@ -563,8 +562,7 @@ async def download_xlsx(request: Request, user: str = Depends(verify_session_or_
         from openpyxl.styles import Font, PatternFill, Alignment
         from openpyxl.utils import get_column_letter
 
-        result = query_history(limit=1_000_000, offset=0, from_ts=None, to_ts=None, order="asc")
-        rows = result["rows"]
+        rows = query_all_rows(order="asc")
 
         wb = openpyxl.Workbook()
         ws = wb.active

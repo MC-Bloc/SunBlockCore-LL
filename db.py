@@ -756,3 +756,31 @@ def query_history(
         "limit":  limit,
         "offset": offset,
     }
+
+
+def query_all_rows(order: str = "asc") -> list:
+    """
+    Return every row in solardata, unbounded — for the CSV/XLSX export
+    endpoints, which need the entire table rather than a page of it.
+
+    query_history() intentionally caps `limit` at 1000 (it backs the paginated
+    History tab UI, which never needs more per page); reusing it for exports
+    would silently truncate them to the first 1000 rows. This is a separate
+    function rather than a bypass flag on query_history() so the page-size
+    cap there can never accidentally regress for the UI's actual use case.
+    """
+    if not config.DB_NAME or not os.path.isfile(config.DB_NAME):
+        return []
+
+    order_dir = "DESC" if order.lower() != "asc" else "ASC"
+    conn = sqlite3.connect(config.DB_NAME, check_same_thread=False)
+    try:
+        cur = conn.execute(
+            f"SELECT * FROM {config.DB_TABLE_NAME} ORDER BY Timestamp {order_dir}"
+        )
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description] if cur.description else []
+    finally:
+        conn.close()
+
+    return [dict(zip(cols, row)) for row in rows]
